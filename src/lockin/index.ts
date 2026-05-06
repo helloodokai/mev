@@ -1,0 +1,98 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { CaseFile, FrontierPoint, MevConfig } from "../types/index.js";
+
+export interface LockInResult {
+  promptPath: string;
+  configPath: string;
+  casesDir: string;
+  summaryPath: string;
+}
+
+export async function lockIn(opts: {
+  projectDir: string;
+  selectedPoint: FrontierPoint;
+  config: MevConfig;
+  cases: CaseFile[];
+  runId: string;
+  summary: string;
+  escalationResolutions: Map<string, string>;
+  totalCost: number;
+  bestScore: number;
+}): Promise<LockInResult> {
+  const { projectDir, selectedPoint, config, cases, runId, summary } = opts;
+
+  // Write locked prompt
+  const promptsDir = path.join(projectDir, "prompts");
+  await mkdir(promptsDir, { recursive: true });
+
+  const provenanceHeader = [
+    `# mev locked prompt`,
+    `# Run: ${runId}`,
+    `# Model: ${selectedPoint.modelAlias}`,
+    `# Score: ${selectedPoint.meanScore.toFixed(2)}`,
+    `# Cost: $${selectedPoint.totalCostUsd.toFixed(2)}`,
+    `# Prompt SHA: ${selectedPoint.promptSha}`,
+    `#`,
+  ].join("\n");
+
+  const promptContent = `${provenanceHeader}\n${selectedPoint.promptText}\n`;
+  const promptPath = path.join(promptsDir, "locked.md");
+  await writeFile(promptPath, promptContent);
+
+  // Write cases
+  const casesDir = path.join(projectDir, "cases");
+  await mkdir(casesDir, { recursive: true });
+  for (const c of cases) {
+    const casePath = path.join(casesDir, `${c.id.padStart(4, "0")}.toml`);
+    const caseContent = serializeCase(c);
+    await writeFile(casePath, caseContent);
+  }
+
+  // Update config to make locked model the default
+  const updatedConfig = { ...config };
+  const lockedModelIndex = updatedConfig.models.findIndex(
+    (m) => m.alias === selectedPoint.modelAlias,
+  );
+  if (lockedModelIndex >= 0) {
+    // Move locked model to first position (the default)
+    const removed = updatedConfig.models.splice(lockedModelIndex, 1);
+    const lockedModel = removed[0]!;
+    updatedConfig.models.unshift(lockedModel);
+  }
+
+  const configPath = path.join(projectDir, "mev.toml");
+  const { stringify } = await import("smol-toml");
+  await writeFile(configPath, stringify(updatedConfig as unknown as Record<string, unknown>));
+
+  // Write summary
+  const runsDir = path.join(projectDir, "runs", runId);
+  const summaryPath = path.join(runsDir, "SUMMARY.md");
+  await mkdir(path.dirname(summaryPath), { recursive: true });
+  await writeFile(summaryPath, summary);
+
+  return { promptPath, configPath, casesDir, summaryPath };
+}
+
+function serializeCase(c: CaseFile): string {
+  const lines = [
+    `id = "${c.id}"`,
+    `generated_at = "${c.generated_at}"`,
+    `difficulty_tier = ${c.difficulty_tier}`,
+    `evolutions = [${c.evolutions.map((e) => `"${e}"`).join(", ")}]`,
+    `tags = [${c.tags.map((t) => `"${t}"`).join(", ")}]`,
+    "",
+    "[input]",
+    `content = """${c.input.content}"""`,
+    "",
+    "[reference]",
+    `output = """${c.reference.output}"""`,
+    `synthesizer_confidence = ${c.reference.synthesizer_confidence}`,
+    "",
+    "[rubric]",
+  ];
+  for (const [k, v] of Object.entries(c.rubric)) {
+    lines.push(`${k} = "${v}"`);
+  }
+  return lines.join("\n");
+}

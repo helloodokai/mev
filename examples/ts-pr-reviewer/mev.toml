@@ -1,0 +1,52 @@
+[project]
+name = "ts-pr-reviewer"
+intent = """
+I want an agent that reviews TypeScript pull requests. It should catch
+type-safety issues, suggest idiomatic refactors, and flag test gaps.
+It should not nitpick formatting.
+"""
+
+seed_examples = []
+
+[constraints]
+max_latency_p95_ms = 5000
+must_be_local = false
+forbid_data_leakage = false
+
+[budget]
+max_usd = 5.00
+max_minutes = 15
+generations = 8
+cases = 40
+
+[[models]]
+alias = "sonnet"
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[[models]]
+alias = "gpt5"
+provider = "openai"
+model = "gpt-5"
+
+[[models]]
+alias = "qwen3-coder"
+provider = "ollama-cloud"
+model = "qwen3-coder:480b-cloud"
+
+[[models]]
+alias = "gpt-oss-20b"
+provider = "ollama-local"
+model = "gpt-oss:20b"
+
+[judge]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[synthesizer]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+
+[critic]
+provider = "anthropic"
+model = "claude-haiku-4-5"

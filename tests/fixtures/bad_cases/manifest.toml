@@ -1,0 +1,27 @@
+# Bad cases for testing the critic gate
+# These should be rejected by the critic
+
+[[bad_case]]
+id = "bad_0001"
+description = "Trivially solvable case - just asks for current time"
+reason = "Trivially solvable by any program, no LLM needed"
+
+[[bad_case]]
+id = "bad_0002"
+description = "Completely ambiguous case - no clear task"
+reason = "Ambiguous intent, cannot determine success criteria"
+
+[[bad_case]]
+id = "bad_0003"
+description = "Out of scope - asks about Python in a TypeScript task"
+reason = "Not aligned with the stated task intent"
+
+[[bad_case]]
+id = "bad_0004"
+description = "Duplicate of another case - same input with minor wording change"
+reason = "Near-duplicate, adds no coverage"
+
+[[bad_case]]
+id = "bad_0005"
+description = "Malformed - empty input, no rubric"
+reason = "Schema gate: missing required fields"
