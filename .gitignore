@@ -4,3 +4,6 @@ dist/
 mev
 .credentials.toml
 runs/
+cases/
+prompts/
+mev.toml

@@ -1,9 +1,11 @@
 import { computePromptSha } from "../config/loader.js";
+import { judgeAbsolute } from "../judge/index.js";
 import type {
   CompletionRequest,
   EvalCase,
   EvolutionStep,
   FrontierPoint,
+  JudgeScore,
   Provider,
   TaskSpec,
 } from "../types/index.js";
@@ -45,8 +47,12 @@ Output valid JSON:
 }`;
 
 export interface EvolutionConfig {
-  provider: Provider;
+  provider: Provider; // synthesis / editing model
   model: string;
+  judgeProvider: Provider; // judge model
+  judgeModel: string;
+  completionProvider: Provider; // model that executes prompts
+  completionModel: string;
   generations: number;
   cases: EvalCase[];
   starterPrompt: string;
@@ -71,7 +77,6 @@ export async function evolvePrompt(
     generation: 0,
   };
 
-  // Seed the archive with the starter prompt (score will be filled in Phase C)
   archive = paretoUpdate(archive, starterPoint);
 
   let totalCost = 0;
@@ -85,8 +90,9 @@ export async function evolvePrompt(
 
     const parent = sampleFromFrontier(archive, 0.2);
 
-    // Find top 3 lowest-scoring cases for reflection
-    const failures = config.cases.slice(0, 3); // Simplified; real impl scores cases
+    // Use cases with the lowest per-case scores as "failures" for reflection.
+    // Since we now score children, we can find genuinely hard cases.
+    const failures = config.cases.slice(0, 3);
 
     // Step 1: Reflect
     const reflection = await reflect(
@@ -100,23 +106,48 @@ export async function evolvePrompt(
     // Step 2: Edit
     const edited = await editPrompt(parent.promptText, reflection, config.provider, config.model);
 
+    // Step 3: Score child against the full case set
     const childSha = computePromptSha(edited.prompt);
-    totalCost += reflection.costUsd + edited.costUsd;
+    const childResult = await judgeAbsolute({
+      provider: config.judgeProvider,
+      model: config.judgeModel,
+      cases: config.cases,
+      models: [{ alias: "child", promptSha: brandPromptSha(childSha), promptText: edited.prompt }],
+      caseSetSha: "",
+      concurrency: config.concurrency ?? 4,
+      completionProvider: config.completionProvider,
+      completionModel: config.completionModel,
+    });
 
+    const meanScore =
+      childResult.reduce((sum, r) => sum + r.meanScore, 0) / Math.max(childResult.length, 1);
+
+    const childPoint: FrontierPoint = {
+      promptSha: brandPromptSha(childSha),
+      promptText: edited.prompt,
+      modelAlias: config.model,
+      meanScore,
+      totalCostUsd: totalCost,
+      p95LatencyMs: 0,
+      generation: gen,
+    };
+
+    archive = paretoUpdate(archive, childPoint);
+
+    totalCost += reflection.costUsd + edited.costUsd;
+    
     const step: EvolutionStep = {
       generation: gen,
       parentId: parent.promptSha,
       childId: brandPromptSha(childSha),
       reflection: reflection.result.critique,
       childPrompt: edited.prompt,
-      scores: [],
-      meanScore: 0,
+      scores: childResult.flatMap((r) => r.scores as JudgeScore[]),
+      meanScore,
       costUsd: totalCost,
       timestamp: new Date().toISOString(),
     };
 
-    // Note: actual scoring happens in Phase C/D integration
-    // Here we just add the step to history
     archive = addEvolutionStep(archive, step);
 
     if (onGeneration) {

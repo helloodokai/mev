@@ -18,19 +18,24 @@ import { brandCaseSetSha, brandPromptSha } from "../types/index.js";
 import { compileIntent } from "./compile-intent.js";
 import {
   createRunDir,
+  loadCheckpoint,
+  restoreCases,
   snapshotCases,
   snapshotSpec,
   writeBaselineResult,
+  writeCheckpoint,
   writeEvolutionStep,
   writeParetoResult,
   writeRunMeta,
   writeSweepResult,
+  latestRunDir,
 } from "./run-dir.js";
 import { synthesizeDataset } from "./synthesize.js";
 
 export interface OptimizeOptions {
   configPath: string;
   yes?: boolean;
+  resume?: boolean;
   verbose?: boolean;
   budgetUsd?: number;
   budgetMinutes?: number;
@@ -41,7 +46,6 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const config = await loadConfig(opts.configPath);
   const projectDir = path.dirname(opts.configPath);
 
-  // Override budget if specified
   if (opts.budgetUsd !== undefined) config.budget.max_usd = opts.budgetUsd;
   if (opts.budgetMinutes !== undefined) config.budget.max_minutes = opts.budgetMinutes;
 
@@ -49,157 +53,240 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const escalationQueue = createEscalationQueue();
   const totalCost = 0;
 
-  // Create run directory
-  const { runId, runDir } = await createRunDir(projectDir);
-  await writeRunMeta(runDir, {
-    id: runId,
-    startedAt: new Date().toISOString(),
-    mevVersion: "0.1.0",
-    budget: {
-      maxUsd: config.budget.max_usd,
-      maxMinutes: config.budget.max_minutes,
-      generations: config.budget.generations,
-      casesTarget: config.budget.cases,
-    },
-  });
-
-  // Create providers
+  // Providers
   const synthProvider = wrapWithLevelUp(createProvider(config.synthesizer.provider));
   const judgeProvider = createProvider(config.judge.provider);
   const criticProvider = createProvider(config.critic.provider);
-
-  console.log("[A] Compiling intent into a task spec...");
-
-  // Phase A: Compile intent
-  const { spec, specFile } = await compileIntent(
-    config.project.intent,
-    config.project.seed_examples,
-    synthProvider,
-    config.synthesizer.model,
-  );
-  await snapshotSpec(specFile, runDir);
-  console.log(`[A] ✓ Task spec compiled: ${specFile.task_summary}`);
-
-  // Phase B: Synthesize dataset
-  console.log("[B] Synthesizing candidate cases...");
-  const synthResult = await synthesizeDataset(
-    spec,
-    config.project.intent,
-    config.project.seed_examples,
-    config.budget.cases,
-    synthProvider,
-    config.synthesizer.model,
-    criticProvider,
-    config.critic.model,
-  );
-
-  const cases: CaseFile[] = synthResult.cases;
-  const caseSetSha = brandCaseSetSha(computeCaseSetSha(cases));
-  await snapshotCases(cases, runDir);
-
-  console.log(
-    `[B] ✓ ${synthResult.accepted} / ${synthResult.accepted + synthResult.rejected} accepted (${Math.round((synthResult.accepted / (synthResult.accepted + synthResult.rejected)) * 100)}%). Filters: ${synthResult.filterStats.schema} schema, ${synthResult.filterStats.dedup} dedup, ${synthResult.filterStats.critic} critic, ${synthResult.filterStats.trivial} trivial.`,
-  );
-
-  // Check critic rejection rate
-  const criticEvent = checkCriticRejectionRate(
-    synthResult.accepted,
-    synthResult.rejected,
-    synthResult.criticRejections.map((r) => r.verdict.reasoning),
-  );
-  if (criticEvent) escalationQueue.add(criticEvent);
-
-  // Phase C: Baseline run
-  console.log("[C] Running baseline on configured models...");
-  const evalCases: EvalCase[] = cases.map((c) => ({
-    id: c.id,
-    generatedAt: c.generated_at,
-    difficultyTier: c.difficulty_tier,
-    evolutions: c.evolutions,
-    tags: c.tags,
-    input: c.input,
-    reference: {
-      output: c.reference.output,
-      synthesizerConfidence: c.reference.synthesizer_confidence,
-    },
-    rubric: c.rubric,
-  }));
-
-  // Build starter prompt from spec
-  const starterPrompt = buildStarterPrompt(spec.taskSummary, spec.successCriteria);
-  const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
   const modelProviders = config.models.map((m) => ({
     alias: m.alias,
     provider: wrapWithLevelUp(createProvider(m.provider)),
     model: m.model,
   }));
+  const mp0 = modelProviders[0]!;
 
-  // Judge baseline
-  const baselineJudgeResults = await judgeAbsolute({
-    provider: judgeProvider,
-    model: config.judge.model,
-    cases: evalCases,
-    models: [{ alias: "starter", promptSha: starterSha, promptText: starterPrompt }],
-    caseSetSha,
-  });
+  // Resolve run directory
+  const resumeCtx = opts.resume ? await tryResume(projectDir) : null;
+  const runDir = resumeCtx?.runDir ?? (await createRunDir(projectDir)).runDir;
+  const runId = resumeCtx?.runId ?? path.basename(runDir);
 
-  for (const result of baselineJudgeResults) {
-    await writeBaselineResult(runDir, {
-      caseId: result.caseId,
-      modelAlias: result.modelAlias,
-      promptSha: result.promptSha,
-      meanScore: result.meanScore,
-      scores: result.scores,
+  if (!resumeCtx) {
+    await writeRunMeta(runDir, {
+      id: runId,
+      startedAt: new Date().toISOString(),
+      mevVersion: "0.1.0",
+      budget: {
+        maxUsd: config.budget.max_usd,
+        maxMinutes: config.budget.max_minutes,
+        generations: config.budget.generations,
+        casesTarget: config.budget.cases,
+      },
     });
   }
 
-  // Check calibration drift
-  const calibrationEvent = checkCalibrationDrift(baselineJudgeResults);
-  if (calibrationEvent) escalationQueue.add(calibrationEvent);
+  const checkpointPhase = resumeCtx?.phase ?? null;
+  if (checkpointPhase) {
+    console.log(`[RESUME] Resuming run ${runId} from phase: ${checkpointPhase}`);
+  }
 
-  console.log(`[C] ✓ Baseline complete`);
+  // --- State variables ---
+  let spec: Awaited<ReturnType<typeof compileIntent>>["spec"];
+  let evalCases: EvalCase[];
+  let starterPrompt: string;
+  let caseSetSha: string;
+  let cases: CaseFile[];
+  let evolutionArchive = (await import("../evolve/archive.js")).createArchive();
 
-  // Phase D: Prompt evolution
-  console.log("[D] Evolving system prompt...");
+  // Phase A: Compile intent (skip if resuming after baseline)
+  const skipA = checkpointPhase !== null && checkpointPhase !== "baseline";
+  if (!skipA) {
+    console.log("[A] Compiling intent into a task spec...");
+    const compiled = await compileIntent(
+      config.project.intent,
+      config.project.seed_examples,
+      synthProvider,
+      config.synthesizer.model,
+    );
+    spec = compiled.spec;
+    await snapshotSpec(compiled.specFile, runDir);
+    console.log(`[A] ✓ Task spec compiled: ${spec.taskSummary}`);
+  } else {
+    const loaded = await import("../config/loader.js").then((m) =>
+      m.loadSpec(path.join(runDir, "spec.json"))
+    );
+    spec = loaded as unknown as typeof spec;
+  }
 
-  const evolutionResult = await evolvePrompt({
-    provider: synthProvider,
-    model: config.synthesizer.model,
-    generations: config.budget.generations,
-    cases: evalCases,
-    starterPrompt,
-    taskSpec: {
-      taskSummary: spec.taskSummary,
-      inputs: spec.inputs,
-      outputs: spec.outputs,
-      successCriteria: spec.successCriteria,
-      failureModes: spec.failureModes,
-      difficultyAxes: spec.difficultyAxes,
-      outOfScope: spec.outOfScope,
-    },
-    maxCostUsd: config.budget.max_usd * 0.6,
-  });
+  // Phase B: Synthesize dataset (skip if resuming after baseline)
+  const skipB = checkpointPhase !== null && checkpointPhase !== "baseline";
+  if (!skipB) {
+    console.log("[B] Synthesizing candidate cases...");
+    const synthResult = await synthesizeDataset(
+      spec!,
+      config.project.intent,
+      config.project.seed_examples,
+      config.budget.cases,
+      synthProvider,
+      config.synthesizer.model,
+      criticProvider,
+      config.critic.model,
+    );
+    cases = synthResult.cases;
+    caseSetSha = brandCaseSetSha(computeCaseSetSha(cases));
+    await snapshotCases(cases, runDir);
+    console.log(
+      `[B] ✓ ${synthResult.accepted} / ${synthResult.accepted + synthResult.rejected} accepted (${Math.round((synthResult.accepted / (synthResult.accepted + synthResult.rejected)) * 100)}%). Filters: ${synthResult.filterStats.schema} schema, ${synthResult.filterStats.dedup} dedup, ${synthResult.filterStats.critic} critic, ${synthResult.filterStats.trivial} trivial.`,
+    );
+    const criticEvent = checkCriticRejectionRate(
+      synthResult.accepted,
+      synthResult.rejected,
+      synthResult.criticRejections.map((r) => r.verdict.reasoning),
+    );
+    if (criticEvent) escalationQueue.add(criticEvent);
+    evalCases = cases.map((c) => ({
+      id: c.id,
+      generatedAt: c.generated_at,
+      difficultyTier: c.difficulty_tier,
+      evolutions: c.evolutions,
+      tags: c.tags,
+      input: c.input,
+      reference: {
+        output: c.reference.output,
+        synthesizerConfidence: c.reference.synthesizer_confidence,
+      },
+      rubric: c.rubric,
+    }));
+  } else {
+    cases = await restoreCases(runDir);
+    caseSetSha = brandCaseSetSha(computeCaseSetSha(cases));
+    evalCases = cases.map((c) => ({
+      id: c.id,
+      generatedAt: c.generated_at,
+      difficultyTier: c.difficulty_tier,
+      evolutions: c.evolutions,
+      tags: c.tags,
+      input: c.input,
+      reference: {
+        output: c.reference.output,
+        synthesizerConfidence: c.reference.synthesizer_confidence,
+      },
+      rubric: c.rubric,
+    }));
+  }
 
-  for (const step of evolutionResult.history) {
-    await writeEvolutionStep(runDir, {
-      generation: step.generation,
-      parentId: step.parentId,
-      childId: step.childId,
-      reflection: step.reflection,
-      childPrompt: step.childPrompt,
-      meanScore: step.meanScore,
-      costUsd: step.costUsd,
-      timestamp: step.timestamp,
+  starterPrompt = buildStarterPrompt(spec!.taskSummary, spec!.successCriteria);
+  const starterSha = brandPromptSha(computePromptSha(starterPrompt));
+
+  // Phase C: Baseline
+  const skipC = checkpointPhase === "evolution" || checkpointPhase === "sweep";
+  if (!skipC) {
+    console.log("[C] Running baseline on configured models...");
+    const baselineJudgeResults = await judgeAbsolute({
+      provider: judgeProvider,
+      model: config.judge.model,
+      cases: evalCases,
+      models: [{ alias: "starter", promptSha: starterSha, promptText: starterPrompt }],
+      caseSetSha,
+      completionProvider: mp0.provider,
+      completionModel: mp0.model,
+    });
+    for (const result of baselineJudgeResults) {
+      await writeBaselineResult(runDir, {
+        caseId: result.caseId,
+        modelAlias: result.modelAlias,
+        promptSha: result.promptSha,
+        meanScore: result.meanScore,
+        scores: result.scores,
+      });
+    }
+    const calibrationEvent = checkCalibrationDrift(baselineJudgeResults);
+    if (calibrationEvent) escalationQueue.add(calibrationEvent);
+    console.log(`[C] ✓ Baseline complete`);
+    await writeCheckpoint(runDir, {
+      phase: "baseline",
+      startedAt: new Date().toISOString(),
+      config: { generationsLeft: config.budget.generations, nextGeneration: 1 },
+      frontier: [],
     });
   }
 
-  console.log(`[D] ✓ Evolution complete: ${evolutionResult.history.length} generations`);
+  // Phase D: Evolution
+  const skipD = checkpointPhase === "sweep";
+  if (!skipD) {
+    console.log("[D] Evolving system prompt...");
+    const cp = checkpointPhase === "evolution"
+      ? await loadCheckpoint(runDir)
+      : null;
+    const generationsToRun = cp
+      ? cp.config.generationsLeft
+      : config.budget.generations;
 
-  // Phase E: Model × prompt sweep
+    evolutionArchive = await evolvePrompt({
+      provider: synthProvider,
+      model: config.synthesizer.model,
+      judgeProvider,
+      judgeModel: config.judge.model,
+      completionProvider: mp0.provider,
+      completionModel: mp0.model,
+      generations: generationsToRun,
+      cases: evalCases,
+      starterPrompt,
+      taskSpec: {
+        taskSummary: spec!.taskSummary,
+        inputs: spec!.inputs,
+        outputs: spec!.outputs,
+        successCriteria: spec!.successCriteria,
+        failureModes: spec!.failureModes,
+        difficultyAxes: spec!.difficultyAxes,
+        outOfScope: spec!.outOfScope,
+      },
+      maxCostUsd: config.budget.max_usd * 0.6,
+    });
+
+    for (const step of evolutionArchive.history) {
+      await writeEvolutionStep(runDir, {
+        generation: step.generation,
+        parentId: step.parentId,
+        childId: step.childId,
+        reflection: step.reflection,
+        childPrompt: step.childPrompt,
+        meanScore: step.meanScore,
+        costUsd: step.costUsd,
+        timestamp: step.timestamp,
+      });
+    }
+    console.log(`[D] ✓ Evolution complete: ${evolutionArchive.history.length} generations`);
+    await writeCheckpoint(runDir, {
+      phase: "evolution",
+      startedAt: new Date().toISOString(),
+      config: { generationsLeft: 0, nextGeneration: config.budget.generations + 1 },
+      frontier: evolutionArchive.frontier,
+    });
+  } else {
+    const cp = await loadCheckpoint(runDir);
+    const { createArchive, paretoUpdate } = await import("../evolve/archive.js");
+    const archive = createArchive();
+    for (const p of cp?.frontier ?? []) {
+      Object.assign(archive, paretoUpdate(archive, p));
+    }
+    for (const step of archive.history) {
+      await writeEvolutionStep(runDir, {
+        generation: step.generation,
+        parentId: step.parentId,
+        childId: step.childId,
+        reflection: step.reflection,
+        childPrompt: step.childPrompt,
+        meanScore: step.meanScore,
+        costUsd: step.costUsd,
+        timestamp: step.timestamp,
+      });
+    }
+    evolutionArchive = archive;
+  }
+
+  // Phase E: Sweep
   console.log("[E] Running model × prompt sweep...");
-
-  const topPrompts = evolutionResult.frontier.slice(0, 3);
+  const topPrompts = evolutionArchive.frontier.slice(0, 3);
   const sweepResults: FrontierPoint[] = [];
 
   for (const prompt of topPrompts) {
@@ -209,24 +296,25 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
           provider: judgeProvider,
           model: config.judge.model,
           cases: evalCases,
-          models: [{ alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText }],
+          models: [
+            { alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText },
+          ],
           caseSetSha,
+          completionProvider: mp.provider,
+          completionModel: mp.model,
         });
 
         const meanScore =
           result.reduce((sum, r) => sum + r.meanScore, 0) / Math.max(result.length, 1);
         const totalLatency = 0;
-        let totalCostVal = 0;
-        for (const _r of result) {
-          totalCostVal += 0;
-        }
+        const totalCostVal = 0;
 
         sweepResults.push({
           promptSha: prompt.promptSha,
           promptText: prompt.promptText,
           modelAlias: mp.alias,
           meanScore,
-          totalCostUsd: totalCost,
+          totalCostUsd: totalCostVal,
           p95LatencyMs: totalLatency,
           generation: prompt.generation,
         });
@@ -235,10 +323,10 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
           promptSha: prompt.promptSha,
           modelAlias: mp.alias,
           meanScore,
-          totalCostUsd: totalCost,
+          totalCostUsd: totalCostVal,
         });
       } catch {
-        // Continue with other models
+        /* continue */
       }
     }
   }
@@ -248,14 +336,15 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const frontier = computeParetoFrontier(sweepResults);
   const kneeIndex = findKnee(frontier);
 
-  await writeParetoResult(runDir, {
+  await writeParetoResult(runDir, { frontier, kneeIndex, runId, caseSetSha });
+  await writeCheckpoint(runDir, {
+    phase: "sweep",
+    startedAt: new Date().toISOString(),
+    config: { generationsLeft: 0, nextGeneration: config.budget.generations + 1 },
     frontier,
-    kneeIndex,
-    runId,
-    caseSetSha,
   });
 
-  // Add lock-in preflight
+  // Phase G: Lock in
   escalationQueue.add({
     kind: "lockin_preflight",
     priority: 1.0,
@@ -264,7 +353,6 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     timestamp: new Date().toISOString(),
   });
 
-  // Show review pane
   const escalations = escalationQueue.drain();
   const { escalationResolutions, selectedFrontierIndex } = await showReviewPane(
     escalations,
@@ -273,19 +361,17 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     opts.yes ?? false,
   );
 
-  // Lock in
   const selectedPoint = frontier[selectedFrontierIndex];
   if (!selectedPoint) throw new Error("No frontier point selected");
   const totalRunCost = totalCost;
-
-  const improvement = 0; // computed from actual scores
+  const improvement = 0;
   const summary = generateSummary({
     runId,
     frontier,
     kneeIndex,
     totalCost: totalRunCost,
     escalations: escalations.filter((e) => e.kind !== "lockin_preflight"),
-    generationsUsed: evolutionResult.history.length,
+    generationsUsed: evolutionArchive.history.length,
     casesCount: cases.length,
     bestScore: Math.max(...frontier.map((p) => p.meanScore)),
     openWeightImprovement: improvement,
@@ -303,15 +389,21 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     bestScore: selectedPoint.meanScore,
   });
 
-  // Write HTML report
   const reportHtml = generateHtmlReport({
     frontier,
-    evolutionSteps: evolutionResult.history,
+    evolutionSteps: evolutionArchive.history,
     escalations: escalations.filter((e) => e.kind !== "lockin_preflight"),
     runId,
     kneeIndex,
   });
   await Bun.write(path.join(runDir, "report.html"), reportHtml);
+
+  await writeCheckpoint(runDir, {
+    phase: "locked",
+    startedAt: new Date().toISOString(),
+    config: { generationsLeft: 0, nextGeneration: config.budget.generations + 1 },
+    frontier,
+  });
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
   console.log(`✓ Locked in. Total time: ${elapsed}s`);
@@ -319,6 +411,18 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   console.log(`  → mev.toml`);
   console.log(`  → cases/`);
   console.log(`  → runs/${runId}/`);
+}
+
+// ---------------------------------------------------------------------------
+// Resume helper
+// ---------------------------------------------------------------------------
+
+async function tryResume(projectDir: string): Promise<{ runDir: string; runId: string; phase: string } | null> {
+  const dir = await latestRunDir(projectDir);
+  if (!dir) return null;
+  const cp = await loadCheckpoint(dir);
+  if (!cp || cp.phase === "locked") return null;
+  return { runDir: dir, runId: path.basename(dir), phase: cp.phase };
 }
 
 function buildStarterPrompt(summary: string, criteria: ReadonlyArray<string>): string {
@@ -334,7 +438,6 @@ function buildStarterPrompt(summary: string, criteria: ReadonlyArray<string>): s
 
 function computeParetoFrontier(points: FrontierPoint[]): FrontierPoint[] {
   if (points.length <= 1) return points;
-
   const frontier: FrontierPoint[] = [];
   for (const candidate of points) {
     const dominated = frontier.some(
@@ -347,7 +450,6 @@ function computeParetoFrontier(points: FrontierPoint[]): FrontierPoint[] {
           existing.p95LatencyMs < candidate.p95LatencyMs),
     );
     if (!dominated) {
-      // Remove existing frontier members dominated by this candidate
       const newFrontier = frontier.filter(
         (f) =>
           !(

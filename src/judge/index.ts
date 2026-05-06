@@ -79,12 +79,37 @@ Output valid JSON:
 }`;
 
 export interface JudgeOptions {
-  provider: Provider;
-  model: string;
+  provider: Provider; // judge provider
+  model: string; // judge model
   cases: ReadonlyArray<EvalCase>;
   models: ReadonlyArray<{ alias: string; promptSha: PromptSha; promptText: string }>;
   caseSetSha: string;
   concurrency?: number;
+  completionProvider: Provider; // provider used to run the prompts being judged
+  completionModel: string; // model used to run the prompts being judged
+}
+
+async function executePrompt(
+  promptText: string,
+  caseData: EvalCase,
+  provider: Provider,
+  model: string,
+): Promise<{ text: string; latencyMs: number; costUsd: number | null; finishReason: string }> {
+  const request: CompletionRequest = {
+    model,
+    provider: provider.id,
+    systemPrompt: promptText,
+    userPrompt: caseData.input.content,
+    temperature: 0.2,
+    maxTokens: 2048,
+  };
+  const resp = await provider.complete(request);
+  return {
+    text: resp.text,
+    latencyMs: resp.latencyMs,
+    costUsd: resp.costUsd,
+    finishReason: resp.finishReason,
+  };
 }
 
 export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> {
@@ -94,9 +119,18 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
   for (const modelConfig of opts.models) {
     for (const case_ of opts.cases) {
       tasks.push(async () => {
+        // 1. Execute the prompt to get real model output
+        const execution = await executePrompt(
+          modelConfig.promptText,
+          case_,
+          opts.completionProvider,
+          opts.completionModel,
+        );
+
+        // 2. Judge the actual output
         const scores = await runAbsoluteJudge(
           case_,
-          modelConfig.promptText,
+          execution.text,
           opts.provider,
           opts.model,
         );
@@ -106,7 +140,7 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
           promptSha: modelConfig.promptSha,
           scores,
           meanScore: scores.reduce((sum, s) => sum + s.score, 0) / Math.max(scores.length, 1),
-          raw: null,
+          raw: { execution, scores },
         };
       });
     }

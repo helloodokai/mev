@@ -56,6 +56,8 @@ export async function regress(
       { alias: lockedModel.alias, promptSha: brandPromptSha("regress"), promptText: cleanPrompt },
     ],
     caseSetSha: "regress",
+    completionProvider: provider,
+    completionModel: lockedModel.model,
   });
 
   const threshold = opts.threshold ?? 1.0;
