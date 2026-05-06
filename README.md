@@ -1,4 +1,8 @@
-# Mev
+<p align="center">
+  <img src="mev-logo.png" alt="mev logo" width="200">
+</p>
+
+<h1 align="center">Mev</h1>
 
 Mev is an intent-driven prompt-optimization engine. You describe what you want an LLM agent to do in plain English; Mev compiles that into a task specification, synthesizes an evaluation dataset, evolves a system prompt across generations, and selects the best prompt–model pair.
 
