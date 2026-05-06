@@ -32,7 +32,7 @@ describe("ParetoArchive", () => {
     const point = makePoint("a", 3.0, 1.0, 500);
     archive = paretoUpdate(archive, point);
     expect(archive.frontier.length).toBe(1);
-    expect(archive.frontier[0]!.promptSha).toBe(brandPromptSha("a"));
+    expect(archive.frontier[0]?.promptSha).toBe(brandPromptSha("a"));
   });
 
   it("keeps both non-dominated points", () => {
@@ -53,7 +53,7 @@ describe("ParetoArchive", () => {
     archive = paretoUpdate(archive, better);
     // better dominates worse on all dimensions
     expect(archive.frontier.length).toBe(1);
-    expect(archive.frontier[0]!.promptSha).toBe(brandPromptSha("better"));
+    expect(archive.frontier[0]?.promptSha).toBe(brandPromptSha("better"));
   });
 
   it("handles three-way frontier", () => {
@@ -93,7 +93,7 @@ describe("findKneePoint", () => {
     ];
     const knee = findKneePoint(frontier);
     // budget has best quality/cost ratio (20.0)
-    expect(frontier[knee]!.promptSha).toBe(brandPromptSha("budget"));
+    expect(frontier[knee]?.promptSha).toBe(brandPromptSha("budget"));
   });
 
   it("returns 0 for single point", () => {

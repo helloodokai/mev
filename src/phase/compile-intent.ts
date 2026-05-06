@@ -96,7 +96,7 @@ export async function compileIntent(
   provider: Provider,
   model: string,
 ): Promise<{ spec: TaskSpec; specFile: TaskSpecFile }> {
-  const userParts: string[] = [FEW_SHOT_EXAMPLES, "", `Now compile this intent:`, "", intent];
+  const userParts: string[] = [FEW_SHOT_EXAMPLES, "", "Now compile this intent:", "", intent];
 
   if (seedExamples.length > 0) {
     userParts.push("", "Seed examples from the user (anchor your synthesis to these):");

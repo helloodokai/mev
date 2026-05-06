@@ -18,6 +18,7 @@ import { brandCaseSetSha, brandPromptSha } from "../types/index.js";
 import { compileIntent } from "./compile-intent.js";
 import {
   createRunDir,
+  latestRunDir,
   loadCheckpoint,
   restoreCases,
   snapshotCases,
@@ -28,7 +29,6 @@ import {
   writeParetoResult,
   writeRunMeta,
   writeSweepResult,
-  latestRunDir,
 } from "./run-dir.js";
 import { synthesizeDataset } from "./synthesize.js";
 
@@ -63,7 +63,8 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     provider: wrapWithLevelUp(createProvider(m.provider)),
     model: m.model,
   }));
-  const mp0 = modelProviders[0]!;
+  const mp0 = modelProviders[0];
+  if (!mp0) throw new Error("No models configured");
 
   // Resolve run directory
   const resumeCtx = opts.resume ? await tryResume(projectDir) : null;
@@ -112,7 +113,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     console.log(`[A] ✓ Task spec compiled: ${spec.taskSummary}`);
   } else {
     const loaded = await import("../config/loader.js").then((m) =>
-      m.loadSpec(path.join(runDir, "spec.json"))
+      m.loadSpec(path.join(runDir, "spec.json")),
     );
     spec = loaded as unknown as typeof spec;
   }
@@ -121,8 +122,9 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const skipB = checkpointPhase !== null && checkpointPhase !== "baseline";
   if (!skipB) {
     console.log("[B] Synthesizing candidate cases...");
+    if (!spec) throw new Error("Spec not loaded");
     const synthResult = await synthesizeDataset(
-      spec!,
+      spec,
       config.project.intent,
       config.project.seed_examples,
       config.budget.cases,
@@ -174,7 +176,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     }));
   }
 
-  starterPrompt = buildStarterPrompt(spec!.taskSummary, spec!.successCriteria);
+  starterPrompt = buildStarterPrompt(spec?.taskSummary, spec?.successCriteria);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
   // Phase C: Baseline
@@ -201,7 +203,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     }
     const calibrationEvent = checkCalibrationDrift(baselineJudgeResults);
     if (calibrationEvent) escalationQueue.add(calibrationEvent);
-    console.log(`[C] ✓ Baseline complete`);
+    console.log("[C] ✓ Baseline complete");
     await writeCheckpoint(runDir, {
       phase: "baseline",
       startedAt: new Date().toISOString(),
@@ -214,12 +216,8 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const skipD = checkpointPhase === "sweep";
   if (!skipD) {
     console.log("[D] Evolving system prompt...");
-    const cp = checkpointPhase === "evolution"
-      ? await loadCheckpoint(runDir)
-      : null;
-    const generationsToRun = cp
-      ? cp.config.generationsLeft
-      : config.budget.generations;
+    const cp = checkpointPhase === "evolution" ? await loadCheckpoint(runDir) : null;
+    const generationsToRun = cp ? cp.config.generationsLeft : config.budget.generations;
 
     evolutionArchive = await evolvePrompt({
       provider: synthProvider,
@@ -232,13 +230,13 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       cases: evalCases,
       starterPrompt,
       taskSpec: {
-        taskSummary: spec!.taskSummary,
-        inputs: spec!.inputs,
-        outputs: spec!.outputs,
-        successCriteria: spec!.successCriteria,
-        failureModes: spec!.failureModes,
-        difficultyAxes: spec!.difficultyAxes,
-        outOfScope: spec!.outOfScope,
+        taskSummary: spec?.taskSummary,
+        inputs: spec?.inputs,
+        outputs: spec?.outputs,
+        successCriteria: spec?.successCriteria,
+        failureModes: spec?.failureModes,
+        difficultyAxes: spec?.difficultyAxes,
+        outOfScope: spec?.outOfScope,
       },
       maxCostUsd: config.budget.max_usd * 0.6,
     });
@@ -296,9 +294,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
           provider: judgeProvider,
           model: config.judge.model,
           cases: evalCases,
-          models: [
-            { alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText },
-          ],
+          models: [{ alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText }],
           caseSetSha,
           completionProvider: mp.provider,
           completionModel: mp.model,
@@ -407,9 +403,9 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
   console.log(`✓ Locked in. Total time: ${elapsed}s`);
-  console.log(`  → prompts/locked.md`);
-  console.log(`  → mev.toml`);
-  console.log(`  → cases/`);
+  console.log("  → prompts/locked.md");
+  console.log("  → mev.toml");
+  console.log("  → cases/");
   console.log(`  → runs/${runId}/`);
 }
 
@@ -417,7 +413,9 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
 // Resume helper
 // ---------------------------------------------------------------------------
 
-async function tryResume(projectDir: string): Promise<{ runDir: string; runId: string; phase: string } | null> {
+async function tryResume(
+  projectDir: string,
+): Promise<{ runDir: string; runId: string; phase: string } | null> {
   const dir = await latestRunDir(projectDir);
   if (!dir) return null;
   const cp = await loadCheckpoint(dir);
@@ -474,7 +472,8 @@ function findKnee(frontier: FrontierPoint[]): number {
   let bestIndex = 0;
   let bestRatio = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < frontier.length; i++) {
-    const point = frontier[i]!;
+    const point = frontier[i];
+    if (!point) continue;
     const ratio = point.meanScore / Math.max(point.totalCostUsd, 0.001);
     if (ratio > bestRatio) {
       bestRatio = ratio;

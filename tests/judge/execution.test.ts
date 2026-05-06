@@ -75,15 +75,15 @@ describe("judgeAbsolute with execution", () => {
     });
 
     expect(executionCalls.length).toBe(1);
-    expect(executionCalls[0]!.systemPrompt).toBe("system prompt");
-    expect(executionCalls[0]!.userPrompt).toBe("test input");
+    expect(executionCalls[0]?.systemPrompt).toBe("system prompt");
+    expect(executionCalls[0]?.userPrompt).toBe("test input");
 
     expect(judgeCalls.length).toBe(1);
-    expect(judgeCalls[0]!.userPrompt).toContain("OUTPUT:test input");
+    expect(judgeCalls[0]?.userPrompt).toContain("OUTPUT:test input");
 
     expect(results.length).toBe(1);
-    expect(results[0]!.meanScore).toBe(4);
-    expect(results[0]!.scores[0]!.justification).toBe("ok");
+    expect(results[0]?.meanScore).toBe(4);
+    expect(results[0]?.scores[0]?.justification).toBe("ok");
   });
 
   it("returns score 0 when execution fails", async () => {
@@ -121,6 +121,6 @@ describe("judgeAbsolute with execution", () => {
       completionModel: "completion-model",
     });
 
-    expect(results[0]!.scores[0]!.score).toBe(0);
+    expect(results[0]?.scores[0]?.score).toBe(0);
   });
 });

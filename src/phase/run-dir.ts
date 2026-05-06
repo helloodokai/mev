@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadCase, saveCase, saveSpec } from "../config/loader.js";
 import type { TaskSpecFile } from "../types/config.js";
@@ -26,11 +26,7 @@ export async function createRunDir(baseDir: string): Promise<{ runId: RunId; run
   return { runId, runDir };
 }
 
-async function lockFile(
-  runDir: string,
-  fn: () => Promise<void>,
-  maxWaitMs = 30000,
-): Promise<void> {
+async function lockFile(runDir: string, fn: () => Promise<void>, maxWaitMs = 30000): Promise<void> {
   const lockPath = path.join(runDir, ".lock");
   const started = Date.now();
   while (await Bun.file(lockPath).exists()) {
@@ -85,7 +81,7 @@ export async function writeJsonl(
 ): Promise<void> {
   await lockFile(runDir, async () => {
     const filePath = path.join(runDir, filename);
-    const line = JSON.stringify(record) + "\n";
+    const line = `${JSON.stringify(record)}\n`;
     const file = Bun.file(filePath);
     const exists = await file.exists();
     if (exists) {
@@ -156,7 +152,8 @@ export async function latestRunDir(projectDir: string): Promise<string | null> {
       .map((e) => e.name)
       .sort()
       .reverse();
-    return dirs.length > 0 ? path.join(runsDir, dirs[0]!) : null;
+    const first = dirs[0];
+    return first ? path.join(runsDir, first) : null;
   } catch {
     return null;
   }

@@ -24,15 +24,16 @@ type Evolution = (typeof VERTICAL_EVOLUTIONS)[number] | (typeof HORIZONTAL_EVOLU
 function pickEvolutions(diffAxes: ReadonlyArray<string>): Evolution[] {
   const evolutions: Evolution[] = [];
   if (diffAxes.length > 0) {
-    evolutions.push(VERTICAL_EVOLUTIONS[Math.floor(Math.random() * VERTICAL_EVOLUTIONS.length)]!);
+    const v = VERTICAL_EVOLUTIONS[Math.floor(Math.random() * VERTICAL_EVOLUTIONS.length)];
+    if (v) evolutions.push(v);
   }
   if (Math.random() > 0.5) {
-    evolutions.push(
-      HORIZONTAL_EVOLUTIONS[Math.floor(Math.random() * HORIZONTAL_EVOLUTIONS.length)]!,
-    );
+    const h = HORIZONTAL_EVOLUTIONS[Math.floor(Math.random() * HORIZONTAL_EVOLUTIONS.length)];
+    if (h) evolutions.push(h);
   }
   if (Math.random() > 0.7 && evolutions.length < 2) {
-    evolutions.push(VERTICAL_EVOLUTIONS[Math.floor(Math.random() * VERTICAL_EVOLUTIONS.length)]!);
+    const v2 = VERTICAL_EVOLUTIONS[Math.floor(Math.random() * VERTICAL_EVOLUTIONS.length)];
+    if (v2) evolutions.push(v2);
   }
   return evolutions;
 }
@@ -143,7 +144,8 @@ export async function synthesizeDataset(
   const evolvedTasks = Array.from({ length: evolvedCount }, (_, i) => {
     const id = String(seedCount + i + 1).padStart(4, "0");
     const evolutions = pickEvolutions(spec.difficultyAxes);
-    const seedCase = allCases[Math.floor(Math.random() * allCases.length)] ?? allCases[0]!;
+    const seedCase = allCases[Math.floor(Math.random() * allCases.length)] ?? allCases[0];
+    if (!seedCase) throw new Error("No seed case available for evolution");
     return generateEvolvedCase(id, spec, seedCase, evolutions, seedExamples, provider, model);
   });
 
@@ -179,7 +181,8 @@ export async function synthesizeDataset(
   const maxTrivial = Math.max(3, Math.floor(deduped.length * 0.1));
 
   for (let i = 0; i < deduped.length; i++) {
-    const caseFile = deduped[i]!;
+    const caseFile = deduped[i];
+    if (!caseFile) continue;
     const verdict = criticResults[i];
     if (!verdict) {
       filterStats.critic++;

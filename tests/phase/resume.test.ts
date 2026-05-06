@@ -1,15 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
-import path from "node:path";
 import os from "node:os";
-import {
-  writeCheckpoint,
-  loadCheckpoint,
-  latestRunDir,
-  createRunDir,
-  restoreCases,
-} from "../../src/phase/run-dir.js";
+import path from "node:path";
 import { saveCase } from "../../src/config/loader.js";
+import {
+  createRunDir,
+  latestRunDir,
+  loadCheckpoint,
+  restoreCases,
+  writeCheckpoint,
+} from "../../src/phase/run-dir.js";
 import type { CaseFile, FrontierPoint } from "../../src/types/core.js";
 import { brandPromptSha } from "../../src/types/core.js";
 
@@ -22,7 +22,11 @@ function setup(tmpBase: string) {
 }
 
 function teardown(tmpBase: string) {
-  try { rmSync(tmpBase, { recursive: true }); } catch { /* no-op */ }
+  try {
+    rmSync(tmpBase, { recursive: true });
+  } catch {
+    /* no-op */
+  }
 }
 
 describe("Checkpoint / Resume", () => {
@@ -49,10 +53,10 @@ describe("Checkpoint / Resume", () => {
     });
     const cp = await loadCheckpoint(runDir);
     expect(cp).not.toBeNull();
-    expect(cp!.phase).toBe("evolution");
-    expect(cp!.config.generationsLeft).toBe(3);
-    expect(cp!.frontier.length).toBe(1);
-    expect(cp!.frontier[0]!.meanScore).toBe(3.5);
+    expect(cp?.phase).toBe("evolution");
+    expect(cp?.config.generationsLeft).toBe(3);
+    expect(cp?.frontier.length).toBe(1);
+    expect(cp?.frontier[0]?.meanScore).toBe(3.5);
     teardown(tmpBase);
   });
 
@@ -93,8 +97,8 @@ describe("Checkpoint / Resume", () => {
     await saveCase(c, path.join(runDir, "cases"));
     const restored = await restoreCases(runDir);
     expect(restored.length).toBe(1);
-    expect(restored[0]!.id).toBe("0001");
-    expect(restored[0]!.input.content).toBe("hello");
+    expect(restored[0]?.id).toBe("0001");
+    expect(restored[0]?.input.content).toBe("hello");
     teardown(tmpBase);
   });
 
@@ -119,8 +123,9 @@ describe("Checkpoint / Resume", () => {
     });
 
     const latest = await latestRunDir(tmpBase);
-    const cp = await loadCheckpoint(latest!);
-    expect(cp!.phase).toBe("evolution");
+    if (!latest) throw new Error("No latest run found");
+    const cp = await loadCheckpoint(latest);
+    expect(cp?.phase).toBe("evolution");
     teardown(tmpBase);
   });
 });

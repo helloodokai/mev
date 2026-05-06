@@ -51,7 +51,7 @@ export class OllamaCloudProvider implements Provider {
     };
 
     if (req.minP !== undefined) {
-      options["min_p"] = req.minP;
+      options.min_p = req.minP;
     }
 
     const body: Record<string, unknown> = {
@@ -63,7 +63,7 @@ export class OllamaCloudProvider implements Provider {
     };
 
     if (req.responseSchema && req.responseSchema instanceof z.ZodObject) {
-      body["format"] = zodToJsonSchema(req.responseSchema);
+      body.format = zodToJsonSchema(req.responseSchema);
     }
 
     const resp = await fetch(`${this.host}/api/generate`, {

@@ -31,8 +31,8 @@ describe("EscalationQueue", () => {
 
     const drained = queue.drain();
     expect(drained.length).toBe(2);
-    expect(drained[0]!.kind).toBe("position_swap_disagreement");
-    expect(drained[1]!.kind).toBe("calibration_drift");
+    expect(drained[0]?.kind).toBe("position_swap_disagreement");
+    expect(drained[1]?.kind).toBe("calibration_drift");
   });
 
   it("caps at 7 events", () => {
@@ -69,7 +69,7 @@ describe("checkCriticRejectionRate", () => {
   it("fires when rejection rate exceeds 30%", () => {
     const event = checkCriticRejectionRate(20, 15, ["unclear", "out of scope", "trivial"]);
     expect(event).not.toBeNull();
-    expect(event!.kind).toBe("critic_rejection_rate_elevated");
+    expect(event?.kind).toBe("critic_rejection_rate_elevated");
   });
 
   it("does not fire when rejection rate is below 30%", () => {
@@ -100,7 +100,7 @@ describe("checkCalibrationDrift", () => {
     ];
     const event = checkCalibrationDrift(results);
     expect(event).not.toBeNull();
-    expect(event!.kind).toBe("calibration_drift");
+    expect(event?.kind).toBe("calibration_drift");
   });
 
   it("does not fire when scores are centered (~3.0)", () => {
@@ -138,7 +138,7 @@ describe("checkInterRubricVariance", () => {
 
     const event = checkInterRubricVariance(results, ["catches_errors", "concise"]);
     expect(event).not.toBeNull();
-    expect(event!.kind).toBe("inter_rubric_variance");
+    expect(event?.kind).toBe("inter_rubric_variance");
   });
 
   it("does not fire when criteria have healthy variance", () => {
@@ -182,7 +182,7 @@ describe("checkInterRubricVariance", () => {
     const event = checkInterRubricVariance(results, ["catches_errors", "concise"]);
     // "concise" has variance 0 (should fire)
     expect(event).not.toBeNull();
-    expect(event!.rubricCriterion).toBe("concise");
+    expect(event?.rubricCriterion).toBe("concise");
   });
 });
 
@@ -201,7 +201,7 @@ describe("checkOptimizerPlateau", () => {
     ];
     const event = checkOptimizerPlateau([frontier, frontier, frontier], 2);
     expect(event).not.toBeNull();
-    expect(event!.kind).toBe("optimizer_plateau");
+    expect(event?.kind).toBe("optimizer_plateau");
   });
 
   it("does not fire when score band is wide", () => {
@@ -245,7 +245,7 @@ describe("checkCriticPerCaseUncertainty", () => {
     };
     const event = checkCriticPerCaseUncertainty("0017", verdict);
     expect(event).not.toBeNull();
-    expect(event!.caseId).toBe("0017");
+    expect(event?.caseId).toBe("0017");
   });
 
   it("does not fire when critic is confident", () => {

@@ -27,13 +27,13 @@ export async function lockIn(opts: {
   await mkdir(promptsDir, { recursive: true });
 
   const provenanceHeader = [
-    `# mev locked prompt`,
+    "# mev locked prompt",
     `# Run: ${runId}`,
     `# Model: ${selectedPoint.modelAlias}`,
     `# Score: ${selectedPoint.meanScore.toFixed(2)}`,
     `# Cost: $${selectedPoint.totalCostUsd.toFixed(2)}`,
     `# Prompt SHA: ${selectedPoint.promptSha}`,
-    `#`,
+    "#",
   ].join("\n");
 
   const promptContent = `${provenanceHeader}\n${selectedPoint.promptText}\n`;
@@ -57,8 +57,8 @@ export async function lockIn(opts: {
   if (lockedModelIndex >= 0) {
     // Move locked model to first position (the default)
     const removed = updatedConfig.models.splice(lockedModelIndex, 1);
-    const lockedModel = removed[0]!;
-    updatedConfig.models.unshift(lockedModel);
+    const lockedModel = removed[0];
+    if (lockedModel) updatedConfig.models.unshift(lockedModel);
   }
 
   const configPath = path.join(projectDir, "mev.toml");

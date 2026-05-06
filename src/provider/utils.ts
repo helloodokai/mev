@@ -11,11 +11,11 @@ export interface AuthConfig {
 export function resolveAuth(provider: ProviderId, config: AuthConfig): string | null {
   switch (provider) {
     case "anthropic":
-      return config.anthropicApiKey ?? process.env["ANTHROPIC_API_KEY"] ?? null;
+      return config.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? null;
     case "openai":
-      return config.openaiApiKey ?? process.env["OPENAI_API_KEY"] ?? null;
+      return config.openaiApiKey ?? process.env.OPENAI_API_KEY ?? null;
     case "ollama-cloud":
-      return config.ollamaCloudApiKey ?? process.env["OLLAMA_CLOUD_API_KEY"] ?? null;
+      return config.ollamaCloudApiKey ?? process.env.OLLAMA_CLOUD_API_KEY ?? null;
     case "ollama-local":
       return null;
   }

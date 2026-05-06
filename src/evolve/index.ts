@@ -135,7 +135,7 @@ export async function evolvePrompt(
     archive = paretoUpdate(archive, childPoint);
 
     totalCost += reflection.costUsd + edited.costUsd;
-    
+
     const step: EvolutionStep = {
       generation: gen,
       parentId: parent.promptSha,

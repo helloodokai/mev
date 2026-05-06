@@ -65,7 +65,8 @@ export async function showReviewPane(
   }
 
   for (let i = 0; i < displayEscalations.length; i++) {
-    const e = displayEscalations[i]!;
+    const e = displayEscalations[i];
+    if (!e) continue;
     clack.note(e.details, `Escalation ${i + 1} of ${displayEscalations.length} — ${e.kind}`);
 
     const options: Array<{ value: string; label: string; hint?: string }> = [];
@@ -113,7 +114,7 @@ export async function showReviewPane(
     options.push({ value: "edit", label: "Edit by hand" });
 
     const choice = await clack.select({
-      message: `How to resolve?`,
+      message: "How to resolve?",
       options: options.map((o) => {
         const opt: { value: string; label: string; hint: string } = {
           value: o.value,

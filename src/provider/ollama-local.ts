@@ -18,7 +18,7 @@ export class OllamaLocalProvider implements Provider {
   private host: string;
 
   constructor(host?: string) {
-    this.host = host ?? process.env["OLLAMA_LOCAL_HOST"] ?? "http://localhost:11434";
+    this.host = host ?? process.env.OLLAMA_LOCAL_HOST ?? "http://localhost:11434";
   }
 
   async list(): Promise<ModelInfo[]> {
@@ -49,11 +49,11 @@ export class OllamaLocalProvider implements Provider {
     };
 
     if (req.minP !== undefined) {
-      options["min_p"] = req.minP;
+      options.min_p = req.minP;
     }
 
     if (req.stopSequences && req.stopSequences.length > 0) {
-      options["stop"] = req.stopSequences;
+      options.stop = req.stopSequences;
     }
 
     const body: Record<string, unknown> = {
@@ -65,7 +65,7 @@ export class OllamaLocalProvider implements Provider {
     };
 
     if (req.responseSchema && req.responseSchema instanceof z.ZodObject) {
-      body["format"] = zodToJsonSchema(req.responseSchema);
+      body.format = zodToJsonSchema(req.responseSchema);
     }
 
     const resp = await fetch(`${this.host}/api/generate`, {

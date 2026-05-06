@@ -128,12 +128,7 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
         );
 
         // 2. Judge the actual output
-        const scores = await runAbsoluteJudge(
-          case_,
-          execution.text,
-          opts.provider,
-          opts.model,
-        );
+        const scores = await runAbsoluteJudge(case_, execution.text, opts.provider, opts.model);
         return {
           caseId: case_.id,
           modelAlias: modelConfig.alias,

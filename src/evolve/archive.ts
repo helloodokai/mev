@@ -69,7 +69,10 @@ export function sampleFromFrontier(archive: ParetoArchive, epsilon = 0.2): Front
     return weightedSample(archive.frontier, weights);
   }
   // Epsilon-greedy: occasionally sample dominated to escape local minima
-  return archive.dominated[Math.floor(Math.random() * archive.dominated.length)]!;
+  const idx = Math.floor(Math.random() * archive.dominated.length);
+  const pick = archive.dominated[idx];
+  if (!pick) throw new Error("Unexpected empty dominated list");
+  return pick;
 }
 
 export function findKneePoint(frontier: FrontierPoint[]): number {
@@ -82,7 +85,8 @@ export function findKneePoint(frontier: FrontierPoint[]): number {
   let bestRatio = Number.NEGATIVE_INFINITY;
 
   for (let i = 0; i < sorted.length; i++) {
-    const point = sorted[i]!;
+    const point = sorted[i];
+    if (!point) continue;
     const qualityPerDollar = point.meanScore / Math.max(point.totalCostUsd, 0.001);
     if (qualityPerDollar > bestRatio) {
       bestRatio = qualityPerDollar;
@@ -90,7 +94,8 @@ export function findKneePoint(frontier: FrontierPoint[]): number {
     }
   }
 
-  const kneePoint = sorted[bestKnee]!;
+  const kneePoint = sorted[bestKnee];
+  if (!kneePoint) return 0;
   return frontier.findIndex(
     (p) => p.promptSha === kneePoint.promptSha && p.modelAlias === kneePoint.modelAlias,
   );
@@ -107,8 +112,13 @@ function weightedSample(items: FrontierPoint[], weights: number[]): FrontierPoin
   const rand = Math.random();
   let cumulative = 0;
   for (let i = 0; i < items.length; i++) {
-    cumulative += weights[i]!;
-    if (rand <= cumulative) return items[i]!;
+    const w = weights[i];
+    const item = items[i];
+    if (w == null || !item) continue;
+    cumulative += w;
+    if (rand <= cumulative) return item;
   }
-  return items[items.length - 1]!;
+  const fallback = items[items.length - 1];
+  if (!fallback) throw new Error("Unexpected empty items list");
+  return fallback;
 }

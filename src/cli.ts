@@ -78,7 +78,7 @@ class InitCommand extends Command {
 
     await saveConfig(config, path.join(projectDir, "mev.toml"));
 
-    clack.outro(`Saved to mev.toml. Run \`mev optimize\` to start.`);
+    clack.outro("Saved to mev.toml. Run `mev optimize` to start.");
   }
 }
 
@@ -163,7 +163,10 @@ class DiffCommand extends Command {
   config = Option.String("--config", "mev.toml", { description: "Path to mev.toml" });
 
   override async execute() {
-    const result = await diffRuns(this.runA!, this.runB!, this.config ?? "mev.toml");
+    const runA = this.runA;
+    const runB = this.runB;
+    if (!runA || !runB) throw new Error("runA and runB are required");
+    const result = await diffRuns(runA, runB, this.config ?? "mev.toml");
     console.log(result);
   }
 }
@@ -175,9 +178,11 @@ class ReportCommand extends Command {
   config = Option.String("--config", "mev.toml", { description: "Path to mev.toml" });
 
   override async execute() {
+    const run = this.run;
+    if (!run) throw new Error("run is required");
     const configPath = this.config ?? "mev.toml";
     const projectDir = path.dirname(configPath);
-    const reportPath = path.join(projectDir, "runs", this.run!, "report.html");
+    const reportPath = path.join(projectDir, "runs", run, "report.html");
     try {
       const content = await Bun.file(reportPath).text();
       console.log(content);
