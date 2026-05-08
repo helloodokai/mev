@@ -75,9 +75,11 @@ describe("generateSummary", () => {
       casesCount: 30,
       bestScore: 4.12,
       openWeightImprovement: 0.61,
+      baselineScore: 3.5,
     });
     expect(summary).toContain("# mev run summary");
     expect(summary).toContain("2026-05-05");
-    expect(summary).toContain("0.61");
+    // Improvement is computed and shown (now formatted as percentage in headline)
+    expect(summary).toContain("0.6%"); // 0.61 rounded to one decimal
   });
 });

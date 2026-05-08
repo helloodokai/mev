@@ -3,7 +3,6 @@ import { isParallelMapError, parallelMap } from "../concurrency/index.js";
 import type { CompletionRequest, Provider, TaskSpec } from "../types/index.js";
 import {
   type CaseFile,
-  CaseFileSchema,
   type CriticVerdict,
   CriticVerdictSchema,
 } from "../types/index.js";
@@ -107,6 +106,8 @@ export interface SynthesisResult {
   rejected: number;
   filterStats: { schema: number; dedup: number; critic: number; trivial: number };
   criticRejections: Array<{ id: string; verdict: CriticVerdict }>;
+  trainCount: number;
+  holdoutCount: number;
 }
 
 export async function synthesizeDataset(
@@ -119,6 +120,7 @@ export async function synthesizeDataset(
   criticProvider: Provider,
   criticModel: string,
   concurrency = 4,
+  holdoutFraction = 0.3,
 ): Promise<SynthesisResult> {
   const seedCount = Math.min(Math.floor(targetCount * 0.4), spec.successCriteria.length);
   const evolvedCount = targetCount - seedCount;
@@ -227,13 +229,99 @@ export async function synthesizeDataset(
     accepted.push(caseFile);
   }
 
+  // Train/test split: stratify by difficulty so both sets are representative
+  const stratified = stratifiedHoldoutSplit(accepted, holdoutFraction);
+  const finalCases = stratified.cases;
+  const trainCount = stratified.trainCount;
+  const holdoutCount = stratified.holdoutCount;
+
   return {
-    cases: accepted,
-    accepted: accepted.length,
-    rejected: allCases.length - accepted.length,
+    cases: finalCases,
+    accepted: finalCases.length,
+    rejected: allCases.length - finalCases.length,
     filterStats,
     criticRejections,
+    trainCount,
+    holdoutCount,
   };
+}
+
+/**
+ * Stratified train/test split: marks holdoutFraction of cases as holdout=true,
+ * stratified by difficulty_tier so both sets have similar distributions.
+ *
+ * Returns at least 2 train cases and at least 1 holdout case (if possible).
+ */
+function stratifiedHoldoutSplit(
+  cases: CaseFile[],
+  holdoutFraction: number,
+): { cases: CaseFile[]; trainCount: number; holdoutCount: number } {
+  if (cases.length < 4 || holdoutFraction <= 0) {
+    // Too few cases for a meaningful split — keep everything as train
+    return {
+      cases: cases.map((c) => ({ ...c, holdout: false })),
+      trainCount: cases.length,
+      holdoutCount: 0,
+    };
+  }
+
+  // Group by difficulty tier
+  const byTier = new Map<number, CaseFile[]>();
+  for (const c of cases) {
+    const tier = c.difficulty_tier;
+    const existing = byTier.get(tier) ?? [];
+    existing.push(c);
+    byTier.set(tier, existing);
+  }
+
+  const result: CaseFile[] = [];
+  let trainCount = 0;
+  let holdoutCount = 0;
+
+  for (const [_tier, tierCases] of byTier) {
+    // Deterministic shuffle by case id (stable across runs)
+    const shuffled = [...tierCases].sort((a, b) => a.id.localeCompare(b.id));
+    // Reverse half for variety, but keep deterministic
+    if (shuffled.length > 1) {
+      const mid = Math.floor(shuffled.length / 2);
+      const back = shuffled.slice(mid);
+      const front = shuffled.slice(0, mid);
+      shuffled.length = 0;
+      shuffled.push(...back, ...front);
+    }
+    const holdoutN = Math.max(0, Math.floor(shuffled.length * holdoutFraction));
+    for (let i = 0; i < shuffled.length; i++) {
+      const c = shuffled[i];
+      if (!c) continue;
+      const isHoldout = i < holdoutN;
+      result.push({ ...c, holdout: isHoldout });
+      if (isHoldout) holdoutCount++;
+      else trainCount++;
+    }
+  }
+
+  // Guarantee at least 1 holdout if we have >= 4 cases overall
+  if (holdoutCount === 0 && result.length >= 4) {
+    const last = result[result.length - 1];
+    if (last) {
+      last.holdout = true;
+      holdoutCount = 1;
+      trainCount = result.length - 1;
+    }
+  }
+
+  // Guarantee at least 2 train cases
+  if (trainCount < 2 && result.length >= 2) {
+    for (const c of result) {
+      if (c.holdout && trainCount < 2) {
+        c.holdout = false;
+        trainCount++;
+        holdoutCount--;
+      }
+    }
+  }
+
+  return { cases: result, trainCount, holdoutCount };
 }
 
 async function generateSeedCase(
@@ -271,6 +359,7 @@ async function generateSeedCase(
       synthesizer_confidence: parsed.synthesizer_confidence,
     },
     rubric: parsed.rubric,
+    holdout: false,
   };
 }
 
@@ -310,6 +399,7 @@ async function generateEvolvedCase(
       synthesizer_confidence: parsed.synthesizer_confidence,
     },
     rubric: parsed.rubric,
+    holdout: false,
   };
 }
 

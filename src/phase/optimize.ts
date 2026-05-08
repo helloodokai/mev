@@ -132,12 +132,17 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       config.synthesizer.model,
       criticProvider,
       config.critic.model,
+      4, // concurrency
+      config.optimization.holdout_fraction,
     );
     cases = synthResult.cases;
     caseSetSha = brandCaseSetSha(computeCaseSetSha(cases));
     await snapshotCases(cases, runDir);
     console.log(
       `[B] ✓ ${synthResult.accepted} / ${synthResult.accepted + synthResult.rejected} accepted (${Math.round((synthResult.accepted / (synthResult.accepted + synthResult.rejected)) * 100)}%). Filters: ${synthResult.filterStats.schema} schema, ${synthResult.filterStats.dedup} dedup, ${synthResult.filterStats.critic} critic, ${synthResult.filterStats.trivial} trivial.`,
+    );
+    console.log(
+      `[B] ✓ Train/test split: ${synthResult.trainCount} train + ${synthResult.holdoutCount} holdout (generalization eval).`,
     );
     const criticEvent = checkCriticRejectionRate(
       synthResult.accepted,
@@ -157,6 +162,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
         synthesizerConfidence: c.reference.synthesizer_confidence,
       },
       rubric: c.rubric,
+      holdout: c.holdout ?? false,
     }));
   } else {
     cases = await restoreCases(runDir);
@@ -173,25 +179,37 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
         synthesizerConfidence: c.reference.synthesizer_confidence,
       },
       rubric: c.rubric,
+      holdout: c.holdout ?? false,
     }));
   }
 
   starterPrompt = buildStarterPrompt(spec?.taskSummary, spec?.successCriteria);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
-  // Phase C: Baseline
+  // Train/test split: cases marked holdout=true are NEVER used during evolution.
+  // They are only evaluated at sweep/lock-in for true generalization measurement.
+  const trainCases = evalCases.filter((c) => !c.holdout);
+  const holdoutCases = evalCases.filter((c) => c.holdout);
+  const usableTrainCases = trainCases.length > 0 ? trainCases : evalCases;
+  console.log(
+    `[Split] train=${usableTrainCases.length} | holdout=${holdoutCases.length} (held out for generalization)`,
+  );
+
+  // Phase C: Baseline (run on TRAIN cases for evolution baseline; HOLDOUT separately for generalization)
   let baselineScore = 0;
+  let baselineHoldoutScore = 0;
   const skipC = checkpointPhase === "evolution" || checkpointPhase === "sweep";
   if (!skipC) {
-    console.log("[C] Running baseline on configured models...");
+    console.log("[C] Running baseline on TRAIN cases...");
     const baselineJudgeResults = await judgeAbsolute({
       provider: judgeProvider,
       model: config.judge.model,
-      cases: evalCases,
+      cases: usableTrainCases,
       models: [{ alias: "starter", promptSha: starterSha, promptText: starterPrompt }],
       caseSetSha,
       completionProvider: mp0.provider,
       completionModel: mp0.model,
+      judgeSamples: config.optimization.judge_samples,
     });
     baselineScore =
       baselineJudgeResults.reduce((sum, r) => sum + r.meanScore, 0) /
@@ -203,11 +221,46 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
         promptSha: result.promptSha,
         meanScore: result.meanScore,
         scores: result.scores,
+        split: "train",
       });
+      const raw = result.raw as { execution?: { costUsd: number | null } };
+      totalCost += raw?.execution?.costUsd ?? 0;
     }
+
+    // Also evaluate baseline on holdout for fair comparison later
+    if (holdoutCases.length > 0) {
+      const baselineHoldoutResults = await judgeAbsolute({
+        provider: judgeProvider,
+        model: config.judge.model,
+        cases: holdoutCases,
+        models: [{ alias: "starter", promptSha: starterSha, promptText: starterPrompt }],
+        caseSetSha,
+        completionProvider: mp0.provider,
+        completionModel: mp0.model,
+        judgeSamples: config.optimization.judge_samples,
+      });
+      baselineHoldoutScore =
+        baselineHoldoutResults.reduce((sum, r) => sum + r.meanScore, 0) /
+        Math.max(baselineHoldoutResults.length, 1);
+      for (const result of baselineHoldoutResults) {
+        await writeBaselineResult(runDir, {
+          caseId: result.caseId,
+          modelAlias: result.modelAlias,
+          promptSha: result.promptSha,
+          meanScore: result.meanScore,
+          scores: result.scores,
+          split: "holdout",
+        });
+        const raw = result.raw as { execution?: { costUsd: number | null } };
+        totalCost += raw?.execution?.costUsd ?? 0;
+      }
+    }
+
     const calibrationEvent = checkCalibrationDrift(baselineJudgeResults);
     if (calibrationEvent) escalationQueue.add(calibrationEvent);
-    console.log(`[C] ✓ Baseline complete (score: ${baselineScore.toFixed(2)})`);
+    console.log(
+      `[C] ✓ Baseline complete (train: ${baselineScore.toFixed(2)}${holdoutCases.length > 0 ? `, holdout: ${baselineHoldoutScore.toFixed(2)}` : ""})`,
+    );
     await writeCheckpoint(runDir, {
       phase: "baseline",
       startedAt: new Date().toISOString(),
@@ -216,10 +269,12 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     });
   }
 
-  // Phase D: Evolution
+  // Phase D: Evolution (TRAIN cases only — holdout is reserved for sweep/lock-in)
   const skipD = checkpointPhase === "sweep";
   if (!skipD) {
-    console.log("[D] Evolving system prompt...");
+    console.log(
+      `[D] Evolving system prompt (beam=${config.optimization.beam_width}, crossover=${config.optimization.crossover_rate}, judge_samples=${config.optimization.judge_samples})...`,
+    );
     const cp = checkpointPhase === "evolution" ? await loadCheckpoint(runDir) : null;
     const generationsToRun = cp ? cp.config.generationsLeft : config.budget.generations;
 
@@ -231,7 +286,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       completionProvider: mp0.provider,
       completionModel: mp0.model,
       generations: generationsToRun,
-      cases: evalCases,
+      cases: usableTrainCases,
       starterPrompt,
       taskSpec: {
         taskSummary: spec?.taskSummary,
@@ -243,7 +298,12 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
         outOfScope: spec?.outOfScope,
       },
       maxCostUsd: config.budget.max_usd * 0.6,
+      beamWidth: config.optimization.beam_width,
+      judgeSamples: config.optimization.judge_samples,
+      crossoverRate: config.optimization.crossover_rate,
+      maxExamples: config.optimization.max_examples,
     });
+    totalCost += evolutionArchive.history.reduce((s, st) => s + st.costUsd, 0);
 
     for (const step of evolutionArchive.history) {
       await writeEvolutionStep(runDir, {
@@ -286,54 +346,90 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     evolutionArchive = archive;
   }
 
-  // Phase E: Sweep
-  console.log("[E] Running model × prompt sweep...");
-  const topPrompts = evolutionArchive.frontier.slice(0, 3);
+  // Phase E: Sweep — evaluate top prompts on HOLDOUT for true generalization
+  console.log("[E] Running model × prompt sweep on holdout cases...");
+  // Take top-K from frontier by train score; evaluate each on holdout
+  const allCandidates = [...evolutionArchive.frontier, ...evolutionArchive.dominated]
+    .sort((a, b) => b.meanScore - a.meanScore);
+  // Dedupe by promptSha (frontier and dominated may overlap conceptually after updates)
+  const seenShas = new Set<string>();
+  const topPrompts: FrontierPoint[] = [];
+  for (const p of allCandidates) {
+    if (!seenShas.has(p.promptSha)) {
+      seenShas.add(p.promptSha);
+      topPrompts.push(p);
+    }
+    if (topPrompts.length >= 5) break;
+  }
   const sweepResults: FrontierPoint[] = [];
+  const sweepCases = holdoutCases.length > 0 ? holdoutCases : usableTrainCases;
+  const splitLabel = holdoutCases.length > 0 ? "holdout" : "train (no holdout available)";
+  console.log(`[E] Evaluating ${topPrompts.length} candidates on ${sweepCases.length} ${splitLabel} cases...`);
 
   for (const prompt of topPrompts) {
     for (const mp of modelProviders) {
       try {
         const sweepStart = performance.now();
-        const result = await judgeAbsolute({
+        // Evaluate on holdout (primary signal)
+        const holdoutResult = await judgeAbsolute({
           provider: judgeProvider,
           model: config.judge.model,
-          cases: evalCases,
+          cases: sweepCases,
           models: [{ alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText }],
           caseSetSha,
           completionProvider: mp.provider,
           completionModel: mp.model,
+          judgeSamples: config.optimization.judge_samples,
+          bestOfN: config.optimization.lockin_best_of_n,
         });
 
-        const meanScore =
-          result.reduce((sum, r) => sum + r.meanScore, 0) / Math.max(result.length, 1);
-        const totalLatency = Math.round(performance.now() - sweepStart);
-        const totalCostVal = result.reduce(
-          (sum, r) => {
-            const raw = r.raw as { execution?: { costUsd: number | null } };
-            return sum + (raw?.execution?.costUsd ?? 0);
-          },
-          0,
-        );
+        const holdoutScore =
+          holdoutResult.reduce((sum, r) => sum + r.meanScore, 0) /
+          Math.max(holdoutResult.length, 1);
 
-        sweepResults.push({
+        // Compute score variance across cases as a robustness signal
+        const scoreList = holdoutResult.map((r) => r.meanScore);
+        const meanForVar = scoreList.reduce((a, b) => a + b, 0) / Math.max(scoreList.length, 1);
+        const scoreVariance =
+          scoreList.length > 1
+            ? scoreList.reduce((s, x) => s + (x - meanForVar) ** 2, 0) / scoreList.length
+            : 0;
+
+        const totalLatency = Math.round(performance.now() - sweepStart);
+        const totalCostVal = holdoutResult.reduce((sum, r) => {
+          const raw = r.raw as { execution?: { costUsd: number | null } };
+          return sum + (raw?.execution?.costUsd ?? 0);
+        }, 0);
+        totalCost += totalCostVal;
+
+        // Use train score (from evolution) as primary if no holdout, else holdout
+        const primaryScore = holdoutCases.length > 0 ? holdoutScore : prompt.meanScore;
+
+        const sweepPoint: FrontierPoint = {
           promptSha: prompt.promptSha,
           promptText: prompt.promptText,
           modelAlias: mp.alias,
-          meanScore,
+          meanScore: primaryScore,
+          scoreVariance,
           totalCostUsd: totalCostVal,
           p95LatencyMs: totalLatency,
           generation: prompt.generation,
-        });
+        };
+        if (holdoutCases.length > 0) sweepPoint.holdoutScore = holdoutScore;
+        sweepResults.push(sweepPoint);
 
         await writeSweepResult(runDir, {
           promptSha: prompt.promptSha,
           modelAlias: mp.alias,
-          meanScore,
+          trainScore: prompt.meanScore,
+          holdoutScore: holdoutCases.length > 0 ? holdoutScore : null,
+          scoreVariance,
+          meanScore: primaryScore,
           totalCostUsd: totalCostVal,
+          p95LatencyMs: totalLatency,
         });
-      } catch {
-        /* continue */
+      } catch (err) {
+        console.warn(`[E] Sweep failure for ${mp.alias}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -371,8 +467,23 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const selectedPoint = frontier[selectedFrontierIndex];
   if (!selectedPoint) throw new Error("No frontier point selected");
   const totalRunCost = totalCost;
-  const improvement = baselineScore > 0 ? ((selectedPoint.meanScore - baselineScore) / baselineScore) * 100 : 0;
-  const summary = generateSummary({
+  // Use holdout improvement as the headline number — this is true generalization
+  const headlineBaseline = holdoutCases.length > 0 ? baselineHoldoutScore : baselineScore;
+  const headlineFinal = selectedPoint.holdoutScore ?? selectedPoint.meanScore;
+  const improvement =
+    headlineBaseline > 0
+      ? ((headlineFinal - headlineBaseline) / headlineBaseline) * 100
+      : 0;
+  if (holdoutCases.length > 0) {
+    console.log(
+      `[Result] Holdout improvement: ${baselineHoldoutScore.toFixed(2)} → ${headlineFinal.toFixed(2)} (${improvement >= 0 ? "+" : ""}${improvement.toFixed(1)}%)`,
+    );
+  } else {
+    console.log(
+      `[Result] Train improvement: ${baselineScore.toFixed(2)} → ${headlineFinal.toFixed(2)} (${improvement >= 0 ? "+" : ""}${improvement.toFixed(1)}%)`,
+    );
+  }
+  const summaryArgs: Parameters<typeof generateSummary>[0] = {
     runId,
     frontier,
     kneeIndex,
@@ -382,7 +493,12 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     casesCount: cases.length,
     bestScore: Math.max(...frontier.map((p) => p.meanScore)),
     openWeightImprovement: improvement,
-  });
+    baselineScore,
+    trainCases: usableTrainCases.length,
+    holdoutCases: holdoutCases.length,
+  };
+  if (holdoutCases.length > 0) summaryArgs.baselineHoldoutScore = baselineHoldoutScore;
+  const summary = generateSummary(summaryArgs);
 
   await lockIn({
     projectDir,
@@ -396,13 +512,18 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     bestScore: selectedPoint.meanScore,
   });
 
-  const reportHtml = generateHtmlReport({
+  const reportArgs: Parameters<typeof generateHtmlReport>[0] = {
     frontier,
     evolutionSteps: evolutionArchive.history,
     escalations: escalations.filter((e) => e.kind !== "lockin_preflight"),
     runId,
     kneeIndex,
-  });
+    baselineScore,
+    trainCases: usableTrainCases.length,
+    holdoutCases: holdoutCases.length,
+  };
+  if (holdoutCases.length > 0) reportArgs.baselineHoldoutScore = baselineHoldoutScore;
+  const reportHtml = generateHtmlReport(reportArgs);
   await Bun.write(path.join(runDir, "report.html"), reportHtml);
 
   await writeCheckpoint(runDir, {

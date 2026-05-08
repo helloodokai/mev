@@ -108,6 +108,73 @@ export function addEvolutionStep(archive: ParetoArchive, step: EvolutionStep): P
   };
 }
 
+/**
+ * Get top-K diverse beam from archive.
+ *
+ * Selects K points by descending score, but applies a diversity penalty so
+ * we don't pick K nearly-identical prompts. Uses Maximal Marginal Relevance:
+ * each pick maximizes (score - lambda * max_similarity_to_already_picked).
+ */
+export function topKDiverseBeam(
+  archive: ParetoArchive,
+  k: number,
+  lambda = 0.4,
+): FrontierPoint[] {
+  const all = [...archive.frontier, ...archive.dominated];
+  if (all.length === 0) return [];
+  if (k <= 1) {
+    const top = all.reduce<FrontierPoint | null>((best, cur) => {
+      if (!best || cur.meanScore > best.meanScore) return cur;
+      return best;
+    }, null);
+    return top ? [top] : [];
+  }
+
+  const picked: FrontierPoint[] = [];
+  const remaining = [...all];
+
+  // First pick: highest score
+  remaining.sort((a, b) => b.meanScore - a.meanScore);
+  const first = remaining.shift();
+  if (!first) return [];
+  picked.push(first);
+
+  while (picked.length < k && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const cand = remaining[i];
+      if (!cand) continue;
+      const maxSim = picked.reduce((maxS, p) => {
+        const sim = textSimilarity(cand.promptText, p.promptText);
+        return Math.max(maxS, sim);
+      }, 0);
+      const mmr = cand.meanScore - lambda * maxSim * 5; // sim is 0-1, score 0-5
+      if (mmr > bestScore) {
+        bestScore = mmr;
+        bestIdx = i;
+      }
+    }
+    const next = remaining.splice(bestIdx, 1)[0];
+    if (next) picked.push(next);
+  }
+  return picked;
+}
+
+/**
+ * Quick token-level Jaccard similarity (lowercased tokens).
+ * Returns 0..1 — 0 = totally different, 1 = identical.
+ */
+function textSimilarity(a: string, b: string): number {
+  const tokensA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
+  const tokensB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
+  if (tokensA.size === 0 && tokensB.size === 0) return 1;
+  let intersection = 0;
+  for (const t of tokensA) if (tokensB.has(t)) intersection++;
+  const union = tokensA.size + tokensB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
 function weightedSample(items: FrontierPoint[], weights: number[]): FrontierPoint {
   const rand = Math.random();
   let cumulative = 0;

@@ -3,6 +3,7 @@ import { isParallelMapError, parallelMap } from "../concurrency/index.js";
 import type {
   CompletionRequest,
   EvalCase,
+  FewShotExample,
   JudgeResult,
   JudgeScore,
   PairwiseVerdict,
@@ -69,11 +70,18 @@ export interface JudgeOptions {
   provider: Provider; // judge provider
   model: string; // judge model
   cases: ReadonlyArray<EvalCase>;
-  models: ReadonlyArray<{ alias: string; promptSha: PromptSha; promptText: string }>;
+  models: ReadonlyArray<{
+    alias: string;
+    promptSha: PromptSha;
+    promptText: string;
+    examples?: ReadonlyArray<FewShotExample>;
+  }>;
   caseSetSha: string;
   concurrency?: number;
   completionProvider: Provider; // provider used to run the prompts being judged
   completionModel: string; // model used to run the prompts being judged
+  judgeSamples?: number; // self-consistency: # of judge samples (default 1)
+  bestOfN?: number; // best-of-N inference: run completion N times, judge picks best
 }
 
 async function executePrompt(
@@ -81,13 +89,27 @@ async function executePrompt(
   caseData: EvalCase,
   provider: Provider,
   model: string,
+  examples?: ReadonlyArray<FewShotExample>,
+  temperature = 0.2,
 ): Promise<{ text: string; latencyMs: number; costUsd: number | null; finishReason: string }> {
+  // Build user prompt with optional few-shot examples
+  let userPrompt = caseData.input.content;
+  if (examples && examples.length > 0) {
+    const exampleBlock = examples
+      .map(
+        (ex, i) =>
+          `## Example ${i + 1}\nInput:\n${ex.input}\n\nExpected Output:\n${ex.output}`,
+      )
+      .join("\n\n");
+    userPrompt = `${exampleBlock}\n\n## Now do the following:\n${caseData.input.content}`;
+  }
+
   const request: CompletionRequest = {
     model,
     provider: provider.id,
     systemPrompt: promptText,
-    userPrompt: caseData.input.content,
-    temperature: 0.2,
+    userPrompt,
+    temperature,
     maxTokens: 2048,
   };
   const resp = await provider.complete(request);
@@ -99,41 +121,130 @@ async function executePrompt(
   };
 }
 
+/**
+ * Self-consistency judge: runs N samples and aggregates by median per-criterion.
+ * The variance is preserved as confidence-weakening when high.
+ */
+async function runAbsoluteJudgeWithConsistency(
+  caseData: EvalCase,
+  output: string,
+  provider: Provider,
+  model: string,
+  nSamples: number,
+): Promise<JudgeScore[]> {
+  if (nSamples <= 1) {
+    return runAbsoluteJudge(caseData, output, provider, model);
+  }
+  const sampleTasks = Array.from({ length: nSamples }, () =>
+    runAbsoluteJudge(caseData, output, provider, model, 0.3 + Math.random() * 0.4),
+  );
+  const samples = await Promise.all(sampleTasks);
+
+  // Aggregate per criterion: median score, mean confidence, attenuated by inter-sample variance
+  const criteria = new Set<string>();
+  for (const s of samples) for (const sc of s) criteria.add(sc.criterion);
+
+  const aggregated: JudgeScore[] = [];
+  for (const criterion of criteria) {
+    const scoresForC: number[] = [];
+    const confidencesForC: number[] = [];
+    const justifications: string[] = [];
+    for (const sample of samples) {
+      const found = sample.find((sc) => sc.criterion === criterion);
+      if (found) {
+        scoresForC.push(found.score);
+        confidencesForC.push(found.confidence);
+        justifications.push(found.justification);
+      }
+    }
+    if (scoresForC.length === 0) continue;
+    const sorted = [...scoresForC].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const median =
+      sorted.length % 2 === 0
+        ? Math.round(((sorted[mid - 1] ?? 3) + (sorted[mid] ?? 3)) / 2)
+        : sorted[mid] ?? 3;
+    const mean = scoresForC.reduce((a, b) => a + b, 0) / scoresForC.length;
+    const variance =
+      scoresForC.reduce((sum, n) => sum + (n - mean) ** 2, 0) / scoresForC.length;
+    const baseConf = confidencesForC.reduce((a, b) => a + b, 0) / confidencesForC.length;
+    // Attenuate confidence by variance (high variance = low confidence)
+    const attenuated = baseConf * Math.max(0, 1 - variance / 4);
+    aggregated.push({
+      criterion,
+      score: median,
+      confidence: attenuated,
+      justification:
+        scoresForC.length > 1
+          ? `[SC mean=${mean.toFixed(2)} var=${variance.toFixed(2)}] ${justifications[0] ?? ""}`
+          : justifications[0] ?? "",
+    });
+  }
+  return aggregated;
+}
+
 export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> {
   const tasks: Array<() => Promise<JudgeResult>> = [];
+  const judgeSamples = opts.judgeSamples ?? 1;
+  const bestOfN = opts.bestOfN ?? 1;
 
   for (const modelConfig of opts.models) {
     for (const case_ of opts.cases) {
       tasks.push(async () => {
-        // 1. Execute the prompt to get real model output
-        const execution = await executePrompt(
-          modelConfig.promptText,
-          case_,
-          opts.completionProvider,
-          opts.completionModel,
-        );
+        // 1. Execute the prompt N times if best-of-N is enabled
+        let bestExecution: Awaited<ReturnType<typeof executePrompt>> | null = null;
+        let bestScores: JudgeScore[] | null = null;
+        let bestMean = -Infinity;
 
-        // 2. Judge the actual output
-        const scores = await runAbsoluteJudge(case_, execution.text, opts.provider, opts.model);
+        const runsToTry = Math.max(1, bestOfN);
+        for (let attempt = 0; attempt < runsToTry; attempt++) {
+          // Vary temperature slightly between attempts for diversity
+          const temp = bestOfN > 1 ? 0.2 + attempt * 0.15 : 0.2;
+          const execution = await executePrompt(
+            modelConfig.promptText,
+            case_,
+            opts.completionProvider,
+            opts.completionModel,
+            modelConfig.examples,
+            temp,
+          );
+          // Judge this candidate
+          const scores = await runAbsoluteJudgeWithConsistency(
+            case_,
+            execution.text,
+            opts.provider,
+            opts.model,
+            judgeSamples,
+          );
+          const mean =
+            scores.reduce((sum, s) => sum + s.score, 0) / Math.max(scores.length, 1);
+          if (mean > bestMean) {
+            bestMean = mean;
+            bestExecution = execution;
+            bestScores = scores;
+          }
+          // Early exit if perfect
+          if (mean >= 5 && bestOfN > 1) break;
+        }
+
+        const execution = bestExecution!;
+        const scores = bestScores ?? [];
         return {
           caseId: case_.id,
           modelAlias: modelConfig.alias,
           promptSha: modelConfig.promptSha,
           scores,
-          meanScore: scores.reduce((sum, s) => sum + s.score, 0) / Math.max(scores.length, 1),
-          raw: { execution, scores },
+          meanScore: bestMean === -Infinity ? 0 : bestMean,
+          raw: { execution, scores, attempts: runsToTry },
         };
       });
     }
   }
 
-  const judged = await parallelMap(tasks, (t) => t(), opts.concurrency ?? 2, 180_000);
+  const judged = await parallelMap(tasks, (t) => t(), opts.concurrency ?? 2, 240_000);
   const results: JudgeResult[] = [];
   for (const item of judged) {
     if (isParallelMapError(item)) {
-      // Create a placeholder result for the failed task
-      // We need to know which case/model this was for, but we lost that context
-      // In practice, we should log this
       console.warn(`[judgeAbsolute] Task failed: ${item.__error}`);
       continue;
     }
@@ -197,6 +308,7 @@ async function runAbsoluteJudge(
   promptText: string,
   provider: Provider,
   model: string,
+  temperature = 0,
 ): Promise<JudgeScore[]> {
   const rubricText = Object.entries(caseData.rubric)
     .map(([k, v]) => `- ${k}: ${v}`)
@@ -232,7 +344,7 @@ Score each rubric criterion 1-5. Output JSON.`;
     provider: provider.id,
     systemPrompt: ABSOLUTE_JUDGE_SYSTEM,
     userPrompt,
-    temperature: 0,
+    temperature,
     maxTokens: 2048,
     responseSchema: JudgeOutputSchema,
   };

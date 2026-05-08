@@ -33,6 +33,7 @@ export {
   type JudgeResult,
   type PairwiseVerdict,
   type FrontierPoint,
+  type FewShotExample,
   type EvolutionStep,
   type EscalationKind,
   type EscalationEvent,

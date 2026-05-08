@@ -97,6 +97,7 @@ export interface EvalCase {
     synthesizerConfidence: number;
   };
   rubric: CaseRubric;
+  holdout?: boolean; // true = held out for final evaluation only (not used during evolution)
 }
 
 // ---------------------------------------------------------------------------
@@ -138,10 +139,20 @@ export interface FrontierPoint {
   promptSha: PromptSha;
   promptText: string;
   modelAlias: string;
-  meanScore: number;
+  meanScore: number; // train score (used during evolution)
+  holdoutScore?: number; // held-out generalization score (computed at sweep)
+  scoreVariance?: number; // self-consistency variance (lower = more reliable)
   totalCostUsd: number;
   p95LatencyMs: number;
   generation: number;
+  examples?: FewShotExample[]; // optional bootstrapped examples
+  parents?: PromptSha[]; // for crossover lineage
+}
+
+export interface FewShotExample {
+  input: string;
+  output: string;
+  caseId?: string; // source case if bootstrapped
 }
 
 export interface EvolutionStep {
@@ -154,6 +165,8 @@ export interface EvolutionStep {
   meanScore: number;
   costUsd: number;
   timestamp: string;
+  operator?: "mutate" | "crossover" | "example_swap"; // what kind of edit
+  parents?: PromptSha[]; // for crossover
 }
 
 // ---------------------------------------------------------------------------

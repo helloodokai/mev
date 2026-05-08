@@ -10,7 +10,8 @@ import {
   restoreCases,
   writeCheckpoint,
 } from "../../src/phase/run-dir.js";
-import type { CaseFile, FrontierPoint } from "../../src/types/core.js";
+import type { CaseFile } from "../../src/types/config.js";
+import type { FrontierPoint } from "../../src/types/core.js";
 import { brandPromptSha } from "../../src/types/core.js";
 
 function makeTmpBase(): string {
@@ -63,7 +64,7 @@ describe("Checkpoint / Resume", () => {
   it("finds latest run directory", async () => {
     const tmpBase = makeTmpBase();
     setup(tmpBase);
-    const { runDir: a } = await createRunDir(tmpBase);
+    await createRunDir(tmpBase);
     await new Promise((r) => setTimeout(r, 15));
     const { runDir: b } = await createRunDir(tmpBase);
     const latest = await latestRunDir(tmpBase);

@@ -26,15 +26,26 @@ export async function lockIn(opts: {
   const promptsDir = path.join(projectDir, "prompts");
   await mkdir(promptsDir, { recursive: true });
 
-  const provenanceHeader = [
+  const provenanceLines = [
     "# mev locked prompt",
     `# Run: ${runId}`,
     `# Model: ${selectedPoint.modelAlias}`,
     `# Score: ${selectedPoint.meanScore.toFixed(2)}`,
-    `# Cost: $${selectedPoint.totalCostUsd.toFixed(2)}`,
+  ];
+  if (selectedPoint.holdoutScore !== undefined) {
+    provenanceLines.push(`# Holdout score: ${selectedPoint.holdoutScore.toFixed(2)} (true generalization)`);
+  }
+  if (selectedPoint.scoreVariance !== undefined) {
+    provenanceLines.push(`# Score variance: ${selectedPoint.scoreVariance.toFixed(3)} (lower = more consistent)`);
+  }
+  provenanceLines.push(
+    `# Latency p95: ${selectedPoint.p95LatencyMs}ms`,
+    `# Cost: $${selectedPoint.totalCostUsd.toFixed(4)}`,
     `# Prompt SHA: ${selectedPoint.promptSha}`,
+    `# Generation: ${selectedPoint.generation}`,
     "#",
-  ].join("\n");
+  );
+  const provenanceHeader = provenanceLines.join("\n");
 
   const promptContent = `${provenanceHeader}\n${selectedPoint.promptText}\n`;
   const promptPath = path.join(promptsDir, "locked.md");
@@ -84,6 +95,7 @@ function serializeCase(c: CaseFile): string {
     `difficulty_tier = ${c.difficulty_tier}`,
     `evolutions = [${c.evolutions.map((e) => `"${e}"`).join(", ")}]`,
     `tags = [${c.tags.map((t) => `"${t}"`).join(", ")}]`,
+    `holdout = ${c.holdout ? "true" : "false"}`,
     "",
     "[input]",
     `content = """${escapeTripleQuotes(c.input.content)}"""`,

@@ -30,6 +30,24 @@ export const MevConfigSchema = z.object({
     generations: z.number().int().positive().default(8),
     cases: z.number().int().positive().default(40),
   }),
+  optimization: z
+    .object({
+      // Train/test split: fraction of cases held out for final evaluation
+      holdout_fraction: z.number().min(0).max(0.5).default(0.3),
+      // Beam search width: how many top prompts to keep per generation
+      beam_width: z.number().int().min(1).max(10).default(3),
+      // Self-consistency: number of judge samples to aggregate (1 = no SC)
+      judge_samples: z.number().int().min(1).max(7).default(1),
+      // Crossover: probability of applying crossover vs mutation
+      crossover_rate: z.number().min(0).max(1).default(0.3),
+      // Few-shot: max number of bootstrapped examples to attach
+      max_examples: z.number().int().min(0).max(10).default(3),
+      // On plateau: generate harder cases instead of stopping
+      escalate_on_plateau: z.boolean().default(true),
+      // Best-of-N inference for final lock-in evaluation
+      lockin_best_of_n: z.number().int().min(1).max(7).default(1),
+    })
+    .default({}),
   models: z.array(ModelEntrySchema).min(1),
   judge: JudgeSynthCriticSchema,
   synthesizer: JudgeSynthCriticSchema,
@@ -50,6 +68,8 @@ export const CaseFileSchema = z.object({
     synthesizer_confidence: z.number().min(0).max(1),
   }),
   rubric: z.record(z.string(), z.string()),
+  // true = held out for final evaluation only (not used during evolution)
+  holdout: z.boolean().optional(),
 });
 
 export type CaseFile = z.infer<typeof CaseFileSchema>;

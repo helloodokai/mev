@@ -57,6 +57,15 @@ class InitCommand extends Command {
         generations: 8,
         cases: 40,
       },
+      optimization: {
+        holdout_fraction: 0.3,
+        beam_width: 3,
+        judge_samples: 1,
+        crossover_rate: 0.3,
+        max_examples: 3,
+        escalate_on_plateau: true,
+        lockin_best_of_n: 1,
+      },
       models: [
         { alias: "sonnet", provider: "anthropic" as const, model: "claude-sonnet-4-6" },
         { alias: "gpt5", provider: "openai" as const, model: "gpt-5" },
