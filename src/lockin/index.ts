@@ -75,6 +75,9 @@ export async function lockIn(opts: {
 }
 
 function serializeCase(c: CaseFile): string {
+  // Escape triple quotes in TOML multiline strings
+  const escapeTripleQuotes = (s: string) => s.replace(/"""/g, '"\"\"');
+
   const lines = [
     `id = "${c.id}"`,
     `generated_at = "${c.generated_at}"`,
@@ -83,16 +86,16 @@ function serializeCase(c: CaseFile): string {
     `tags = [${c.tags.map((t) => `"${t}"`).join(", ")}]`,
     "",
     "[input]",
-    `content = """${c.input.content}"""`,
+    `content = """${escapeTripleQuotes(c.input.content)}"""`,
     "",
     "[reference]",
-    `output = """${c.reference.output}"""`,
+    `output = """${escapeTripleQuotes(c.reference.output)}"""`,
     `synthesizer_confidence = ${c.reference.synthesizer_confidence}`,
     "",
     "[rubric]",
   ];
   for (const [k, v] of Object.entries(c.rubric)) {
-    lines.push(`${k} = "${v}"`);
+    lines.push(`${k} = "${escapeTripleQuotes(v)}"`);
   }
   return lines.join("\n");
 }

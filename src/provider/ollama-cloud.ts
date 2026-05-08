@@ -14,6 +14,8 @@ const CLOUD_PRICING: Record<string, { input: number; output: number }> = {
   "gpt-oss:120b-cloud": { input: 0.0008, output: 0.003 },
 };
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+
 export class OllamaCloudProvider implements Provider {
   readonly id: ProviderId = "ollama-cloud";
   private host: string;
@@ -62,54 +64,73 @@ export class OllamaCloudProvider implements Provider {
       options,
     };
 
-    if (req.responseSchema && req.responseSchema instanceof z.ZodObject) {
+    if (req.responseSchema) {
       body.format = zodToJsonSchema(req.responseSchema);
     }
 
-    const resp = await fetch(`${this.host}/api/generate`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
-    if (!resp.ok) {
-      const errText = await resp.text();
+    try {
+      const resp = await fetch(`${this.host}/api/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        return {
+          text: "",
+          inputTokens: 0,
+          outputTokens: 0,
+          latencyMs: performance.now() - start,
+          costUsd: null,
+          finishReason: "error",
+          raw: { error: errText, status: resp.status },
+        };
+      }
+
+      const data = (await resp.json()) as {
+        response: string;
+        prompt_eval_count?: number;
+        eval_count?: number;
+        done_reason?: string;
+      };
+
+      const latencyMs = performance.now() - start;
+      const pricing = CLOUD_PRICING[req.model] ?? { input: 0, output: 0 };
+      const inputTokens = data.prompt_eval_count ?? 0;
+      const outputTokens = data.eval_count ?? 0;
+      const costUsd = (inputTokens * pricing.input + outputTokens * pricing.output) / 1000;
+
+      return {
+        text: data.response ?? "",
+        inputTokens,
+        outputTokens,
+        latencyMs,
+        costUsd: pricing.input > 0 ? costUsd : null,
+        finishReason: data.done_reason === "length" ? "length" : "stop",
+        raw: data,
+      };
+    } catch (err) {
+      const latencyMs = performance.now() - start;
       return {
         text: "",
         inputTokens: 0,
         outputTokens: 0,
-        latencyMs: performance.now() - start,
+        latencyMs,
         costUsd: null,
         finishReason: "error",
-        raw: { error: errText, status: resp.status },
+        raw: { error: err instanceof Error ? err.message : String(err), aborted: true },
       };
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await resp.json()) as {
-      response: string;
-      prompt_eval_count?: number;
-      eval_count?: number;
-      done_reason?: string;
-    };
-
-    const latencyMs = performance.now() - start;
-    const pricing = CLOUD_PRICING[req.model] ?? { input: 0, output: 0 };
-    const inputTokens = data.prompt_eval_count ?? 0;
-    const outputTokens = data.eval_count ?? 0;
-    const costUsd = (inputTokens * pricing.input + outputTokens * pricing.output) / 1000;
-
-    return {
-      text: data.response ?? "",
-      inputTokens,
-      outputTokens,
-      latencyMs,
-      costUsd: pricing.input > 0 ? costUsd : null,
-      finishReason: data.done_reason === "length" ? "length" : "stop",
-      raw: data,
-    };
   }
 }
 
@@ -131,5 +152,8 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
   if (schema instanceof z.ZodArray)
     return { type: "array", items: zodToJsonSchema(schema.element) };
   if (schema instanceof z.ZodEnum) return { type: "string", enum: schema.options };
+  if (schema instanceof z.ZodOptional) return zodToJsonSchema(schema.unwrap());
+  if (schema instanceof z.ZodUnion) return zodToJsonSchema(schema.options[0]);
+  if (schema instanceof z.ZodNullable) return zodToJsonSchema(schema.unwrap());
   return {};
 }

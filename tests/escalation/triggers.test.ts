@@ -66,14 +66,14 @@ describe("EscalationQueue", () => {
 });
 
 describe("checkCriticRejectionRate", () => {
-  it("fires when rejection rate exceeds 30%", () => {
-    const event = checkCriticRejectionRate(20, 15, ["unclear", "out of scope", "trivial"]);
+  it("fires when rejection rate exceeds 50%", () => {
+    const event = checkCriticRejectionRate(10, 15, ["unclear", "out of scope", "trivial"]);
     expect(event).not.toBeNull();
     expect(event?.kind).toBe("critic_rejection_rate_elevated");
   });
 
-  it("does not fire when rejection rate is below 30%", () => {
-    const event = checkCriticRejectionRate(35, 10, ["unclear"]);
+  it("does not fire when rejection rate is below 50%", () => {
+    const event = checkCriticRejectionRate(20, 15, ["unclear"]);
     expect(event).toBeNull();
   });
 
@@ -84,16 +84,16 @@ describe("checkCriticRejectionRate", () => {
 });
 
 describe("checkCalibrationDrift", () => {
-  it("fires when mean score is inflated (>4.2)", () => {
+  it("fires when mean score is inflated (>4.5)", () => {
     const results: JudgeResult[] = [
       {
         caseId: "1",
         modelAlias: "test",
         promptSha: brandPromptSha("abc"),
-        meanScore: 4.5,
+        meanScore: 4.8,
         scores: [
           { criterion: "a", score: 5, confidence: 0.9, justification: "" },
-          { criterion: "b", score: 4, confidence: 0.8, justification: "" },
+          { criterion: "b", score: 5, confidence: 0.8, justification: "" },
         ],
         raw: null,
       },
@@ -187,7 +187,7 @@ describe("checkInterRubricVariance", () => {
 });
 
 describe("checkOptimizerPlateau", () => {
-  it("fires when plateaued for 2+ generations with narrow score band", () => {
+  it("fires when plateaued for 3+ generations with narrow score band", () => {
     const frontier: FrontierPoint[] = [
       {
         promptSha: brandPromptSha("a"),
@@ -199,7 +199,7 @@ describe("checkOptimizerPlateau", () => {
         generation: 1,
       },
     ];
-    const event = checkOptimizerPlateau([frontier, frontier, frontier], 2);
+    const event = checkOptimizerPlateau([frontier, frontier, frontier, frontier], 3);
     expect(event).not.toBeNull();
     expect(event?.kind).toBe("optimizer_plateau");
   });
@@ -226,8 +226,8 @@ describe("checkOptimizerPlateau", () => {
       },
     ];
     // Two separate frontier snapshots (history), wide score band in latest
-    const event = checkOptimizerPlateau([wideFrontier], 2);
-    // Latest frontier has score band 2.5 (4.5 - 2.0), which is > 0.5, so no trigger
+    const event = checkOptimizerPlateau([wideFrontier], 3);
+    // Latest frontier has score band 2.5 (4.5 - 2.0), which is > 0.3, so no trigger
     expect(event).toBeNull();
   });
 });

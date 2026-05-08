@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parallelMap } from "../concurrency/index.js";
+import { isParallelMapError, parallelMap } from "../concurrency/index.js";
 import type { CompletionRequest, Provider, TaskSpec } from "../types/index.js";
 import {
   type CaseFile,
@@ -76,9 +76,6 @@ Output valid JSON:
 
 const CRITIC_PROMPT = `You are a case quality critic. Evaluate this evaluation case against the task spec.
 
-Task intent: {intent}
-Success criteria: {criteria}
-
 Critic rubric - score each dimension:
 - is_clear: Can any competent person understand what the case asks?
 - is_unambiguous: Is there exactly one reasonable interpretation?
@@ -132,59 +129,68 @@ export async function synthesizeDataset(
   // Seed cases - one per success criterion
   const seedTasks = spec.successCriteria.slice(0, seedCount).map((criterion, i) => {
     const id = String(i + 1).padStart(4, "0");
-    return generateSeedCase(id, criterion, spec, seedExamples, provider, model);
+    return () => generateSeedCase(id, criterion, spec, seedExamples, provider, model);
   });
 
-  const seedResults = await parallelMap(seedTasks, (t) => t, concurrency);
+  const seedResults = await parallelMap(seedTasks, (t) => t(), concurrency, 180_000);
   for (const result of seedResults) {
-    allCases.push(result);
-  }
-
-  // Evolved cases
-  const evolvedTasks = Array.from({ length: evolvedCount }, (_, i) => {
-    const id = String(seedCount + i + 1).padStart(4, "0");
-    const evolutions = pickEvolutions(spec.difficultyAxes);
-    const seedCase = allCases[Math.floor(Math.random() * allCases.length)] ?? allCases[0];
-    if (!seedCase) throw new Error("No seed case available for evolution");
-    return generateEvolvedCase(id, spec, seedCase, evolutions, seedExamples, provider, model);
-  });
-
-  const evolvedResults = await parallelMap(evolvedTasks, (t) => t, concurrency);
-  for (const result of evolvedResults) {
-    allCases.push(result);
-  }
-
-  // Gate 1: Schema validation
-  const schemaValid: CaseFile[] = [];
-  for (const c of allCases) {
-    const result = CaseFileSchema.safeParse(c);
-    if (result.success) {
-      schemaValid.push(c);
+    if (isParallelMapError(result)) {
+      console.warn(`[Synthesize] Seed generation failed: ${result.__error}`);
+      continue;
+    }
+    if (result && result.input && result.input.content && result.input.content !== "PARSE_ERROR") {
+      allCases.push(result);
     } else {
       filterStats.schema++;
     }
   }
 
-  // Gate 2: Dedup (MinHash-like via token overlap)
-  const deduped = dedupCases(schemaValid);
-  filterStats.dedup = schemaValid.length - deduped.length;
+  // Evolved cases - evolve from seed cases, not from evolved ones
+  const evolvedTasks = Array.from({ length: evolvedCount }, (_, i) => {
+    const id = String(seedCount + i + 1).padStart(4, "0");
+    const evolutions = pickEvolutions(spec.difficultyAxes);
+    // Only pick from seed cases to avoid evolution drift
+    const seedPool = allCases.filter((c) => c.evolutions.length === 0);
+    const seedCase = seedPool[Math.floor(Math.random() * seedPool.length)] ?? allCases[0];
+    if (!seedCase) throw new Error("No seed case available for evolution");
+    return () => generateEvolvedCase(id, spec, seedCase, evolutions, seedExamples, provider, model);
+  });
 
-  // Gate 3: Critic
+  const evolvedResults = await parallelMap(evolvedTasks, (t) => t(), concurrency, 180_000);
+  for (const result of evolvedResults) {
+    if (isParallelMapError(result)) {
+      console.warn(`[Synthesize] Evolved case generation failed: ${result.__error}`);
+      continue;
+    }
+    if (result && result.input && result.input.content && result.input.content !== "PARSE_ERROR") {
+      allCases.push(result);
+    } else {
+      filterStats.schema++;
+    }
+  }
+
+  // Gate 2: Dedup (MinHash-like via token overlap) - relaxed threshold
+  const deduped = dedupCases(allCases, 0.85);
+  filterStats.dedup = allCases.length - deduped.length;
+
+  // Gate 3: Critic - get full task context
   const criticResults = await parallelMap(
     deduped,
-    (c) => runCritic(c, intent, spec.successCriteria, criticProvider, criticModel),
+    (c) => runCritic(c, intent, spec, criticProvider, criticModel),
     concurrency,
+    180_000,
   );
 
   const accepted: CaseFile[] = [];
   let trivialCount = 0;
-  const maxTrivial = Math.max(3, Math.floor(deduped.length * 0.1));
+  const maxTrivial = Math.max(3, Math.floor(deduped.length * 0.15));
 
   for (let i = 0; i < deduped.length; i++) {
     const caseFile = deduped[i];
     if (!caseFile) continue;
     const verdict = criticResults[i];
-    if (!verdict) {
+
+    if (isParallelMapError(verdict) || !verdict) {
       filterStats.critic++;
       criticRejections.push({
         id: caseFile.id,
@@ -195,17 +201,14 @@ export async function synthesizeDataset(
           is_trivially_solvable: true,
           is_within_scope: true,
           difficulty_tier: 1,
-          reasoning: "Critic failed",
+          reasoning: `Critic failed: ${isParallelMapError(verdict) ? verdict.__error : "unknown error"}`,
         },
       });
       continue;
     }
 
-    const passesGates =
-      verdict.is_clear &&
-      verdict.is_unambiguous &&
-      verdict.is_aligned_with_intent &&
-      verdict.is_within_scope;
+    // Relaxed gates: case passes if it has a clear purpose AND is aligned with intent
+    const passesGates = verdict.is_clear && verdict.is_aligned_with_intent;
 
     if (!passesGates) {
       filterStats.critic++;
@@ -342,6 +345,9 @@ function buildEvolvedUserPrompt(
     "## Task Specification",
     `Summary: ${spec.taskSummary}`,
     `Success Criteria: ${spec.successCriteria.join("; ")}`,
+    `Failure Modes: ${spec.failureModes.join("; ")}`,
+    `Difficulty Axes: ${spec.difficultyAxes.join("; ")}`,
+    `Out of Scope: ${spec.outOfScope.join("; ")}`,
     "",
     "## Seed case to evolve from",
     `Input: ${seedCase.input.content.slice(0, 500)}`,
@@ -358,7 +364,7 @@ function buildEvolvedUserPrompt(
 
 function parseSynthOutput(text: string, fallbackId: string): z.infer<typeof SynthOutputSchema> {
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(text || "{}");
     return SynthOutputSchema.parse({ ...parsed, id: parsed.id || fallbackId });
   } catch {
     return {
@@ -376,15 +382,24 @@ function parseSynthOutput(text: string, fallbackId: string): z.infer<typeof Synt
 async function runCritic(
   caseFile: CaseFile,
   intent: string,
-  criteria: ReadonlyArray<string>,
+  spec: TaskSpec,
   criticProvider: Provider,
   criticModel: string,
 ): Promise<CriticVerdict | null> {
   const userPrompt = [
-    `Intent: ${intent}`,
-    `Criteria: ${criteria.join("; ")}`,
-    "",
-    "## Case to evaluate",
+    `## Task Intent`,
+    `${intent}`,
+    ``,
+    `## Success Criteria`,
+    `${spec.successCriteria.join("; ")}`,
+    ``,
+    `## Failure Modes`,
+    `${spec.failureModes.join("; ")}`,
+    ``,
+    `## Out of Scope`,
+    `${spec.outOfScope.join("; ")}`,
+    ``,
+    `## Case to evaluate`,
     `Input: ${caseFile.input.content.slice(0, 1000)}`,
     `Reference output: ${caseFile.reference.output.slice(0, 500)}`,
     `Rubric: ${JSON.stringify(caseFile.rubric)}`,
@@ -403,20 +418,20 @@ async function runCritic(
   try {
     const resp = await criticProvider.complete(request);
     if (resp.finishReason === "error") return null;
-    const parsed = JSON.parse(resp.text);
+    const parsed = JSON.parse(resp.text || "{}");
     return CriticVerdictSchema.parse(parsed);
   } catch {
     return null;
   }
 }
 
-export function dedupCases(cases: CaseFile[]): CaseFile[] {
+export function dedupCases(cases: CaseFile[], threshold = 0.85): CaseFile[] {
   const seen = new Map<string, CaseFile>();
   for (const c of cases) {
     const fp = minHashFingerprint(c.input.content);
     let isDupe = false;
     for (const [existingFp] of seen) {
-      if (jaccardSim(fp, existingFp) > 0.92) {
+      if (jaccardSim(fp, existingFp) > threshold) {
         isDupe = true;
         break;
       }

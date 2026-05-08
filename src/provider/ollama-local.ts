@@ -13,6 +13,8 @@ interface OllamaModel {
   details: { family: string; parameter_size: string; quantization_level: string };
 }
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+
 export class OllamaLocalProvider implements Provider {
   readonly id: ProviderId = "ollama-local";
   private host: string;
@@ -23,7 +25,10 @@ export class OllamaLocalProvider implements Provider {
 
   async list(): Promise<ModelInfo[]> {
     try {
-      const resp = await fetch(`${this.host}/api/tags`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5_000);
+      const resp = await fetch(`${this.host}/api/tags`, { signal: controller.signal });
+      clearTimeout(timeout);
       if (!resp.ok) return [];
       const data = (await resp.json()) as { models: OllamaModel[] };
       return (data.models ?? []).map((m) => ({
@@ -64,47 +69,67 @@ export class OllamaLocalProvider implements Provider {
       options,
     };
 
-    if (req.responseSchema && req.responseSchema instanceof z.ZodObject) {
+    if (req.responseSchema) {
       body.format = zodToJsonSchema(req.responseSchema);
     }
 
-    const resp = await fetch(`${this.host}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutMs = DEFAULT_TIMEOUT_MS;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!resp.ok) {
-      const errText = await resp.text();
+    try {
+      const resp = await fetch(`${this.host}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        return {
+          text: "",
+          inputTokens: 0,
+          outputTokens: 0,
+          latencyMs: performance.now() - start,
+          costUsd: 0,
+          finishReason: "error",
+          raw: { error: errText, status: resp.status },
+        };
+      }
+
+      const data = (await resp.json()) as {
+        response: string;
+        prompt_eval_count?: number;
+        eval_count?: number;
+        done_reason?: string;
+      };
+
+      const latencyMs = performance.now() - start;
+
+      return {
+        text: data.response ?? "",
+        inputTokens: data.prompt_eval_count ?? 0,
+        outputTokens: data.eval_count ?? 0,
+        latencyMs,
+        costUsd: 0,
+        finishReason: data.done_reason === "length" ? "length" : "stop",
+        raw: data,
+      };
+    } catch (err) {
+      const latencyMs = performance.now() - start;
       return {
         text: "",
         inputTokens: 0,
         outputTokens: 0,
-        latencyMs: performance.now() - start,
+        latencyMs,
         costUsd: 0,
         finishReason: "error",
-        raw: { error: errText, status: resp.status },
+        raw: { error: err instanceof Error ? err.message : String(err), aborted: true },
       };
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await resp.json()) as {
-      response: string;
-      prompt_eval_count?: number;
-      eval_count?: number;
-      done_reason?: string;
-    };
-
-    const latencyMs = performance.now() - start;
-
-    return {
-      text: data.response ?? "",
-      inputTokens: data.prompt_eval_count ?? 0,
-      outputTokens: data.eval_count ?? 0,
-      latencyMs,
-      costUsd: 0,
-      finishReason: data.done_reason === "length" ? "length" : "stop",
-      raw: data,
-    };
   }
 }
 
@@ -126,5 +151,11 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
   if (schema instanceof z.ZodArray)
     return { type: "array", items: zodToJsonSchema(schema.element) };
   if (schema instanceof z.ZodEnum) return { type: "string", enum: schema.options };
+  if (schema instanceof z.ZodOptional)
+    return zodToJsonSchema(schema.unwrap());
+  if (schema instanceof z.ZodUnion)
+    return zodToJsonSchema(schema.options[0]);
+  if (schema instanceof z.ZodNullable)
+    return zodToJsonSchema(schema.unwrap());
   return {};
 }

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { loadAllCases, loadConfig } from "../config/loader.js";
 import { judgeAbsolute } from "../judge/index.js";
 import { createProvider } from "../provider/index.js";
@@ -13,14 +14,20 @@ export async function regress(
   opts: RegressOptions,
 ): Promise<{ passed: boolean; regressed: string[] }> {
   const config = await loadConfig(opts.configPath);
-  const projectDir = new URL(".", `file://${opts.configPath}/..`).pathname.replace(
-    /\/mev\.toml$/,
-    "",
-  );
+  const projectDir = path.dirname(path.resolve(opts.configPath));
 
-  // Load locked prompt
-  const lockedPrompt = await Bun.file(`${projectDir}/prompts/locked.md`).text();
-  const promptLines = lockedPrompt.split("\n").filter((l) => !l.startsWith("#"));
+  // Load locked prompt - strip provenance comments (lines starting with "# " at the top)
+  const lockedPrompt = await Bun.file(path.join(projectDir, "prompts", "locked.md")).text();
+  const lines = lockedPrompt.split("\n");
+  let inProvenance = true;
+  const promptLines: string[] = [];
+  for (const line of lines) {
+    if (inProvenance && line.startsWith("# ")) {
+      continue; // Skip provenance header lines
+    }
+    inProvenance = false;
+    promptLines.push(line);
+  }
   const cleanPrompt = promptLines.join("\n").trim();
 
   // Load cases

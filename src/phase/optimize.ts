@@ -51,7 +51,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
 
   const startTime = Date.now();
   const escalationQueue = createEscalationQueue();
-  const totalCost = 0;
+  let totalCost = 0;
 
   // Providers
   const synthProvider = wrapWithLevelUp(createProvider(config.synthesizer.provider));
@@ -180,6 +180,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
   // Phase C: Baseline
+  let baselineScore = 0;
   const skipC = checkpointPhase === "evolution" || checkpointPhase === "sweep";
   if (!skipC) {
     console.log("[C] Running baseline on configured models...");
@@ -192,6 +193,9 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       completionProvider: mp0.provider,
       completionModel: mp0.model,
     });
+    baselineScore =
+      baselineJudgeResults.reduce((sum, r) => sum + r.meanScore, 0) /
+      Math.max(baselineJudgeResults.length, 1);
     for (const result of baselineJudgeResults) {
       await writeBaselineResult(runDir, {
         caseId: result.caseId,
@@ -203,7 +207,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     }
     const calibrationEvent = checkCalibrationDrift(baselineJudgeResults);
     if (calibrationEvent) escalationQueue.add(calibrationEvent);
-    console.log("[C] ✓ Baseline complete");
+    console.log(`[C] ✓ Baseline complete (score: ${baselineScore.toFixed(2)})`);
     await writeCheckpoint(runDir, {
       phase: "baseline",
       startedAt: new Date().toISOString(),
@@ -290,6 +294,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   for (const prompt of topPrompts) {
     for (const mp of modelProviders) {
       try {
+        const sweepStart = performance.now();
         const result = await judgeAbsolute({
           provider: judgeProvider,
           model: config.judge.model,
@@ -302,8 +307,14 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
 
         const meanScore =
           result.reduce((sum, r) => sum + r.meanScore, 0) / Math.max(result.length, 1);
-        const totalLatency = 0;
-        const totalCostVal = 0;
+        const totalLatency = Math.round(performance.now() - sweepStart);
+        const totalCostVal = result.reduce(
+          (sum, r) => {
+            const raw = r.raw as { execution?: { costUsd: number | null } };
+            return sum + (raw?.execution?.costUsd ?? 0);
+          },
+          0,
+        );
 
         sweepResults.push({
           promptSha: prompt.promptSha,
@@ -360,7 +371,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const selectedPoint = frontier[selectedFrontierIndex];
   if (!selectedPoint) throw new Error("No frontier point selected");
   const totalRunCost = totalCost;
-  const improvement = 0;
+  const improvement = baselineScore > 0 ? ((selectedPoint.meanScore - baselineScore) / baselineScore) * 100 : 0;
   const summary = generateSummary({
     runId,
     frontier,

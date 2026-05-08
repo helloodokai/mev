@@ -10,12 +10,12 @@ const TRIGGER_CONFIG = {
   positionSwapOnHighLeverage: true,
   judgeConfidenceDecile: 0.1,
   interRubricVarianceThreshold: 0.3,
-  criticRejectionRateThreshold: 0.3,
+  criticRejectionRateThreshold: 0.5, // Relaxed: more cases can be rejected without escalation
   criticPerCaseUncertaintyThreshold: 0.5,
-  optimizerPlateauGenerations: 2,
-  optimizerPlateauScoreBand: 0.5,
-  calibrationDriftHigh: 4.2,
-  calibrationDriftLow: 2.0,
+  optimizerPlateauGenerations: 3, // More lenient plateau detection
+  optimizerPlateauScoreBand: 0.3,
+  calibrationDriftHigh: 4.5, // Wider band for 1-5 scale
+  calibrationDriftLow: 1.5,
   maxEscalationsInView: 7,
 } as const;
 

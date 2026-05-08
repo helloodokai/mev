@@ -26,15 +26,26 @@ export async function createRunDir(baseDir: string): Promise<{ runId: RunId; run
   return { runId, runDir };
 }
 
-async function lockFile(runDir: string, fn: () => Promise<void>, maxWaitMs = 30000): Promise<void> {
+async function lockFile(runDir: string, fn: () => Promise<void>, maxWaitMs = 300_000): Promise<void> {
   const lockPath = path.join(runDir, ".lock");
   const started = Date.now();
-  while (await Bun.file(lockPath).exists()) {
-    if (Date.now() - started > maxWaitMs) throw new Error("Lock timeout");
-    await new Promise((r) => setTimeout(r, 50));
+  let acquired = false;
+
+  // Atomic lock using 'wx' flag (O_EXCL): fails if file exists
+  while (!acquired) {
+    try {
+      const lockContent = `${process.pid}-${Date.now()}`;
+      await writeFile(lockPath, lockContent, { flag: "wx" });
+      acquired = true;
+      break;
+    } catch {
+      // Lock is held by another process, wait
+      if (Date.now() - started > maxWaitMs) throw new Error(`Lock timeout after ${maxWaitMs}ms`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
+
   try {
-    await writeFile(lockPath, "");
     await fn();
   } finally {
     try {

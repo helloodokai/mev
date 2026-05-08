@@ -28,16 +28,41 @@ export async function parallelMap<T, U>(
   items: ReadonlyArray<T>,
   fn: (item: T) => Promise<U>,
   concurrency: number,
+  timeoutMs?: number,
 ): Promise<U[]> {
   const sem = new Semaphore(concurrency);
-  return Promise.all(
-    items.map(async (item) => {
+  const results: U[] = new Array(items.length);
+
+  await Promise.all(
+    items.map(async (item, index) => {
       const release = await sem.acquire();
       try {
-        return await fn(item);
+        if (timeoutMs && timeoutMs > 0) {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            results[index] = await fn(item);
+          } finally {
+            clearTimeout(timeout);
+          }
+        } else {
+          results[index] = await fn(item);
+        }
+      } catch (err) {
+        // Store a sentinel error object instead of crashing the whole batch
+        results[index] = {
+          __parallelMapError: true,
+          __error: err instanceof Error ? err.message : String(err),
+        } as unknown as U;
       } finally {
         release();
       }
     }),
   );
+
+  return results;
+}
+
+export function isParallelMapError<U>(result: U): result is U & { __parallelMapError: true; __error: string } {
+  return result !== null && typeof result === "object" && "__parallelMapError" in result;
 }

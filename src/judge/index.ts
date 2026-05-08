@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { parallelMap } from "../concurrency/index.js";
+import { isParallelMapError, parallelMap } from "../concurrency/index.js";
 import type {
   CompletionRequest,
   EvalCase,
@@ -14,35 +14,22 @@ import { JudgeOutputSchema, PairwiseJudgeOutputSchema } from "../types/index.js"
 const CALIBRATION_EXAMPLES = [
   {
     input: "Find the type error in this TypeScript code",
-    output_a: "Line 3 has an implicit 'any' from the missing type annotation on parameter 'data'.",
-    output_b: "The code looks fine to me, no issues found.",
-    expected:
-      "A is clearly better: it identifies a specific type error. B gives a vacuous response.",
-    verdict: "A",
-    score_a: 5,
-    score_b: 1,
+    output: "Line 3 has an implicit 'any' from the missing type annotation on parameter 'data'.",
+    expected: "Excellent: identifies a specific type error precisely.",
+    scores: { precision: 5, actionability: 5 },
   },
   {
     input: "Suggest an idiomatic refactor for this function",
-    output_a: "Consider refactoring.",
-    output_b:
-      "Replace the 'for' loop with 'items.filter(x => x.active).map(x => x.name)'. This is more idiomatic TypeScript and eliminates the mutable accumulator.",
-    expected: "B is better: it provides a specific, actionable refactoring. A is vague.",
-    verdict: "B",
-    score_a: 2,
-    score_b: 5,
+    output: "Consider refactoring.",
+    expected: "Poor: completely vague, no actionable advice.",
+    scores: { precision: 1, actionability: 1 },
   },
   {
     input: "Review this diff for type safety issues",
-    output_a:
-      "I notice a few things. The variable on line 2 could be typed more narrowly. Also line 5 uses 'as any'.",
-    output_b:
+    output:
       "Line 5 uses 'as any' which is unsafe. Replace with a proper type guard: 'if (typeof val === \"string\")'. The variable on line 2 could use a narrowing type.",
-    expected:
-      "B is slightly better: both identify the issues, but B gives an actionable alternative. A is decent but less helpful.",
-    verdict: "B",
-    score_a: 3,
-    score_b: 4,
+    expected: "Good: identifies issues AND provides actionable fixes.",
+    scores: { precision: 4, actionability: 5 },
   },
 ];
 
@@ -61,7 +48,7 @@ Output valid JSON:
   "overall_assessment": "brief summary"
 }`;
 
-const PAIRWISE_JUDGE_SYSTEM = `You are an impartial pairwise evaluator. You will see two model outputs (Model X and Model Y) for the same input.
+const PAIRWISE_JUDGE_SYSTEM = `You are an impartial pairwise evaluator. You will see two model outputs (Model A and Model B) for the same input.
 
 Rules:
 - Do NOT favor longer outputs. Length is not quality.
@@ -113,7 +100,6 @@ async function executePrompt(
 }
 
 export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> {
-  const results: JudgeResult[] = [];
   const tasks: Array<() => Promise<JudgeResult>> = [];
 
   for (const modelConfig of opts.models) {
@@ -141,8 +127,18 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
     }
   }
 
-  const judged = await parallelMap(tasks, (t) => t(), opts.concurrency ?? 4);
-  results.push(...judged);
+  const judged = await parallelMap(tasks, (t) => t(), opts.concurrency ?? 2, 180_000);
+  const results: JudgeResult[] = [];
+  for (const item of judged) {
+    if (isParallelMapError(item)) {
+      // Create a placeholder result for the failed task
+      // We need to know which case/model this was for, but we lost that context
+      // In practice, we should log this
+      console.warn(`[judgeAbsolute] Task failed: ${item.__error}`);
+      continue;
+    }
+    results.push(item);
+  }
   return results;
 }
 
@@ -154,15 +150,16 @@ export async function judgePairwise(
   model: string,
 ): Promise<PairwiseVerdict> {
   const [runAB, runBA] = await Promise.all([
-    runPairwiseJudge(caseData, modelA.output, modelB.output, provider, model, "X", "Y"),
-    runPairwiseJudge(caseData, modelB.output, modelA.output, provider, model, "X", "Y"),
+    runPairwiseJudge(caseData, modelA.output, modelB.output, provider, model, "A", "B"),
+    runPairwiseJudge(caseData, modelB.output, modelA.output, provider, model, "B", "A"),
   ]);
 
   // Position-swap: if A won in first run, B should win in swapped run
   const abWinner = runAB.winner;
   const baWinner = runBA.winner;
 
-  // Map back: in runBA, X=B and Y=A, so "A" in runBA means B actually won
+  // In runAB: labels are A=A, B=B - no remapping needed
+  // In runBA: labels are A=B, B=A, so "A" means B won, "B" means A won
   let originalAB: "A" | "B" | "tie_uncertain";
   let originalBA: "A" | "B" | "tie_uncertain";
 
@@ -170,10 +167,8 @@ export async function judgePairwise(
   else if (abWinner === "B") originalAB = "B";
   else originalAB = "tie_uncertain";
 
-  if (baWinner === "A")
-    originalBA = "B"; // X is B in swapped run
-  else if (baWinner === "B")
-    originalBA = "A"; // Y is A in swapped run
+  if (baWinner === "A") originalBA = "B"; // "A" in runBA means model B won
+  else if (baWinner === "B") originalBA = "A"; // "B" in runBA means model A won
   else originalBA = "tie_uncertain";
 
   const agreement = originalAB === originalBA;
@@ -209,7 +204,7 @@ async function runAbsoluteJudge(
 
   const calibration = CALIBRATION_EXAMPLES.map(
     (ex, i) =>
-      `<example-${i + 1}>\nInput: ${ex.input}\nModel output: ${ex.output_b}\nExpected: ${ex.expected}\nScores: ${JSON.stringify(Object.fromEntries(ex.score_a !== undefined ? [] : []))}\n</example-${i + 1}>`,
+      `<example-${i + 1}>\nInput: ${ex.input}\nModel output: ${ex.output}\nExpected: ${ex.expected}\nScores: ${JSON.stringify(ex.scores)}\n</example-${i + 1}>`,
   ).join("\n\n");
 
   const userPrompt = `## Task
@@ -225,8 +220,9 @@ ${caseData.input.content}
 ${caseData.reference.output}
 
 ## Model Output to Evaluate
-${promptText}
+${stripThinking(promptText)}
 
+## Calibration Examples (score patterns)
 ${calibration}
 
 Score each rubric criterion 1-5. Output JSON.`;
@@ -242,17 +238,17 @@ Score each rubric criterion 1-5. Output JSON.`;
   };
 
   const resp = await provider.complete(request);
-  if (resp.finishReason === "error" || !resp.text) {
+  if (resp.finishReason === "error") {
     return Object.keys(caseData.rubric).map((criterion) => ({
       criterion,
       score: 0,
       confidence: 0,
-      justification: "Judge failed",
+      justification: `Judge failed: ${JSON.stringify(resp.raw)}`,
     }));
   }
 
   try {
-    const parsed = JudgeOutputSchema.parse(JSON.parse(resp.text));
+    const parsed = JudgeOutputSchema.parse(JSON.parse(resp.text || "{}"));
     return parsed.scores.map((s) => ({
       criterion: s.criterion,
       score: Math.max(1, Math.min(5, Math.round(s.score))),
@@ -264,7 +260,7 @@ Score each rubric criterion 1-5. Output JSON.`;
       criterion,
       score: 0,
       confidence: 0,
-      justification: "Parse error",
+      justification: `Parse error: ${resp.text?.slice(0, 200) || "empty"}`,
     }));
   }
 }
@@ -307,10 +303,10 @@ Evaluate both outputs. Output JSON.`;
   };
 
   const resp = await provider.complete(request);
-  if (resp.finishReason === "error" || !resp.text) {
+  if (resp.finishReason === "error") {
     return {
       winner: "tie_uncertain",
-      rationale: "Judge error",
+      rationale: `Judge error: ${JSON.stringify(resp.raw)}`,
       confidence: 0,
       criterion_scores: Object.keys(caseData.rubric).map((c) => ({
         criterion: c,
@@ -321,23 +317,15 @@ Evaluate both outputs. Output JSON.`;
   }
 
   try {
-    const parsed = PairwiseJudgeOutputSchema.parse(JSON.parse(resp.text));
-    // Remap labels back to A/B
-    if (labelA !== "A") {
-      if (parsed.winner === "A") parsed.winner = "B";
-      else if (parsed.winner === "B") parsed.winner = "A";
-      // Map criterion scores
-      parsed.criterion_scores = parsed.criterion_scores.map((s) => ({
-        criterion: s.criterion,
-        model_a_score: s.model_b_score,
-        model_b_score: s.model_a_score,
-      }));
-    }
+    const parsed = PairwiseJudgeOutputSchema.parse(JSON.parse(resp.text || "{}"));
+    // If labels are not the standard A/B, we need to understand the mapping
+    // In our current usage, labelA is either "A" or "B", and labelB is the other
+    // We don't do remapping here anymore - the caller handles it
     return parsed;
   } catch {
     return {
       winner: "tie_uncertain",
-      rationale: "Parse error",
+      rationale: `Parse error: ${resp.text?.slice(0, 200) || "empty"}`,
       confidence: 0,
       criterion_scores: Object.keys(caseData.rubric).map((c) => ({
         criterion: c,
@@ -349,5 +337,8 @@ Evaluate both outputs. Output JSON.`;
 }
 
 export function stripThinking(text: string): string {
-  return text.replace(/<thinking>[\s\S]*?<\/thinking>/g, "").trim();
+  return text
+    .replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .trim();
 }

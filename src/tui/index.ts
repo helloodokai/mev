@@ -140,7 +140,7 @@ export async function showReviewPane(
 
   const frontierOptions = frontier.map((p, i) => ({
     value: String(i),
-    label: `prompt#${p.promptSha.slice(0, 8)} + ${p.modelAlias.padEnd(20)} ${p.meanScore.toFixed(2).padStart(5)}   $${p.totalCostUsd.toFixed(2).padStart(6)}   p50 ${(p.p95LatencyMs / 2).toFixed(1)}s${i === kneeIndex ? " ★ knee" : ""}`,
+    label: `prompt#${p.promptSha.slice(0, 8)} + ${p.modelAlias.padEnd(20)} ${p.meanScore.toFixed(2).padStart(5)}   $${p.totalCostUsd.toFixed(2).padStart(6)}   p95 ${p.p95LatencyMs.toFixed(0)}ms${i === kneeIndex ? " ★ knee" : ""}`,
   }));
 
   const selected = await clack.select({
