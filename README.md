@@ -4,7 +4,7 @@
 
 <h1 align="center">Mev</h1>
 
-Mev is an intent-driven prompt-optimization engine. You describe what you want an LLM agent to do in plain English; Mev compiles that into a task specification, synthesizes an evaluation dataset, evolves a system prompt across generations, and selects the best prompt–model pair.
+Mev is an intent-driven prompt-optimization engine. You describe what you want an LLM agent to do in plain English; Mev compiles that into a task specification, synthesizes an evaluation dataset, evolves a system prompt across generations, and selects the best prompt–model pair — all while measuring real latency, cost, and score.
 
 ## How it works
 
@@ -12,13 +12,13 @@ Mev is an intent-driven prompt-optimization engine. You describe what you want a
    Write a paragraph describing the agent. Mev turns it into a structured task spec with success criteria, failure modes, and difficulty axes.
 
 2. **Synthesize cases**  
-   Automatically generates an evaluation dataset (test inputs + reference outputs + rubric) tuned to your spec.
+   Automatically generates an evaluation dataset (test inputs + reference outputs + rubric) tuned to your spec. Cases pass through critic gating for quality.
 
 3. **Run baseline + evolve**  
-   Executes each prompt against the model, judges the **real output** (not the prompt text), and mutates the prompt using a reflector + editor loop. Each child is scored on the full case set.
+   Executes each prompt against the model, judges the **real output** (not the prompt text), and mutates the prompt using a reflector + editor loop. Each child is scored on the full case set. Evolves from actual failure cases and stops early on plateaus.
 
 4. **Pareto sweep & lock-in**  
-   Sweeps the best evolved prompts against all configured models. Computes a Pareto frontier across score, cost, and latency, then locks in the knee-point winner.
+   Sweeps the best evolved prompts against all configured models. Computes a Pareto frontier across real score, cost, and latency metrics, then locks in the knee-point winner.
 
 5. **Resume after interruption**  
    Every phase writes a `checkpoint.json`. Run with `--resume` to pick up where you left off.
