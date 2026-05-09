@@ -513,6 +513,23 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
 
   const selectedPoint = frontier[selectedFrontierIndex];
   if (!selectedPoint) throw new Error("No frontier point selected");
+  if (holdoutCases.length > 0) {
+    await writeBenchmarkDiffs({
+      runDir,
+      holdoutCases,
+      judgeProvider,
+      judgeModel: config.judge.model,
+      caseSetSha,
+      modelProvider:
+        modelProviders.find((mp) => mp.alias === selectedPoint.modelAlias) ?? modelProviders[0] ?? mp0,
+      starterPrompt,
+      starterSha,
+      starterExamples,
+      selectedPoint,
+      judgeSamples: config.optimization.judge_samples,
+      bestOfN: config.optimization.lockin_best_of_n,
+    });
+  }
   const totalRunCost = totalCost;
   // Use holdout improvement as the headline number — this is true generalization
   const headlineBaseline = holdoutCases.length > 0 ? baselineHoldoutScore : baselineScore;
@@ -625,6 +642,116 @@ async function loadStarterPromptOverride(projectDir: string): Promise<string | n
   if (!(await starterFile.exists())) return null;
   const text = (await starterFile.text()).trim();
   return text.length > 0 ? text : null;
+}
+
+async function writeBenchmarkDiffs(args: {
+  runDir: string;
+  holdoutCases: EvalCase[];
+  judgeProvider: ReturnType<typeof createProvider>;
+  judgeModel: string;
+  caseSetSha: string;
+  modelProvider: { alias: string; provider: ReturnType<typeof createProvider>; model: string };
+  starterPrompt: string;
+  starterSha: string;
+  starterExamples: FewShotExample[];
+  selectedPoint: FrontierPoint;
+  judgeSamples: number;
+  bestOfN: number;
+}): Promise<void> {
+  const starterModel =
+    args.starterExamples.length > 0
+      ? {
+          alias: "starter",
+          promptSha: brandPromptSha(args.starterSha),
+          promptText: args.starterPrompt,
+          examples: args.starterExamples,
+        }
+      : {
+          alias: "starter",
+          promptSha: brandPromptSha(args.starterSha),
+          promptText: args.starterPrompt,
+        };
+  const lockedModel =
+    args.selectedPoint.examples && args.selectedPoint.examples.length > 0
+      ? {
+          alias: "locked",
+          promptSha: args.selectedPoint.promptSha,
+          promptText: args.selectedPoint.promptText,
+          examples: args.selectedPoint.examples,
+        }
+      : {
+          alias: "locked",
+          promptSha: args.selectedPoint.promptSha,
+          promptText: args.selectedPoint.promptText,
+        };
+
+  const [starterResults, lockedResults] = await Promise.all([
+    judgeAbsolute({
+      provider: args.judgeProvider,
+      model: args.judgeModel,
+      cases: args.holdoutCases,
+      models: [starterModel],
+      caseSetSha: args.caseSetSha,
+      completionProvider: args.modelProvider.provider,
+      completionModel: args.modelProvider.model,
+      judgeSamples: args.judgeSamples,
+      bestOfN: args.bestOfN,
+    }),
+    judgeAbsolute({
+      provider: args.judgeProvider,
+      model: args.judgeModel,
+      cases: args.holdoutCases,
+      models: [lockedModel],
+      caseSetSha: args.caseSetSha,
+      completionProvider: args.modelProvider.provider,
+      completionModel: args.modelProvider.model,
+      judgeSamples: args.judgeSamples,
+      bestOfN: args.bestOfN,
+    }),
+  ]);
+
+  const starterByCase = new Map(starterResults.map((result) => [result.caseId, result]));
+  const lockedByCase = new Map(lockedResults.map((result) => [result.caseId, result]));
+
+  const markdown = args.holdoutCases
+    .map((caseData) => {
+      const starter = starterByCase.get(caseData.id);
+      const locked = lockedByCase.get(caseData.id);
+      const starterOutput =
+        ((starter?.raw as { execution?: { text?: string } } | undefined)?.execution?.text ?? "").trim();
+      const lockedOutput =
+        ((locked?.raw as { execution?: { text?: string } } | undefined)?.execution?.text ?? "").trim();
+      return [
+        `## Case ${caseData.id}`,
+        "",
+        `Starter score: ${starter?.meanScore.toFixed(2) ?? "—"}`,
+        `Locked score: ${locked?.meanScore.toFixed(2) ?? "—"}`,
+        "",
+        "### Input",
+        "```text",
+        caseData.input.content,
+        "```",
+        "",
+        "### Reference",
+        "```json",
+        caseData.reference.output,
+        "```",
+        "",
+        "### Starter Output",
+        "```",
+        starterOutput,
+        "```",
+        "",
+        "### Locked Output",
+        "```",
+        lockedOutput,
+        "```",
+        "",
+      ].join("\n");
+    })
+    .join("\n");
+
+  await Bun.write(path.join(args.runDir, "benchmark-diffs.md"), markdown);
 }
 
 // ---------------------------------------------------------------------------
