@@ -79,4 +79,34 @@ describe("anti-drift guardrails", () => {
     expect(guarded.prompt).toBe("Redact names and emails using fixed tokens.");
     expect(guarded.changes_made[0]).toContain("anti-drift guard");
   });
+
+  it("catches character-space preservation variants seen in redaction runs", () => {
+    const reasons = detectPromptDrift({
+      baselinePrompts: ["Preserve surrounding text structure exactly."],
+      candidatePrompt: [
+        "Preserve surrounding text structure exactly.",
+        "Character Space Preservation: the replacement tokens must occupy the exact character space of the original PII.",
+        "Do not collapse or expand spacing.",
+      ].join("\n"),
+      taskSpec: makeTaskSpec(),
+    });
+
+    expect(reasons.length).toBeGreaterThanOrEqual(2);
+    expect(reasons.join("\n")).toContain("character-space preservation");
+    expect(reasons.join("\n")).toContain("spacing-width preservation");
+  });
+
+  it("catches forced string-length matching variants", () => {
+    const reasons = detectPromptDrift({
+      baselinePrompts: ["Use fixed replacement tokens."],
+      candidatePrompt: [
+        "Use fixed replacement tokens.",
+        "The resulting string length must exactly match the length of the original PII segment.",
+      ].join("\n"),
+      taskSpec: makeTaskSpec(),
+    });
+
+    expect(reasons.length).toBe(1);
+    expect(reasons[0]).toContain("forced string-length matching");
+  });
 });

@@ -26,9 +26,17 @@ type ScoredEvolutionStep = EvolutionStep & { _latencyMs?: number; _examples?: Fe
 
 const DRIFT_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /character-for-character/i, label: "character-for-character preservation" },
+  { pattern: /character space preservation/i, label: "character-space preservation" },
+  { pattern: /exact character space/i, label: "exact character space" },
   { pattern: /exact character count/i, label: "exact character count" },
   { pattern: /exact character length/i, label: "exact character length" },
+  {
+    pattern: /(resulting|string) length.*exact(ly)? match|exact(ly)? match.*(resulting|string) length/i,
+    label: "forced string-length matching",
+  },
   { pattern: /match the character length/i, label: "matched character length" },
+  { pattern: /direct, verbatim replacement/i, label: "direct verbatim replacement" },
+  { pattern: /do not collapse or expand spacing/i, label: "spacing-width preservation" },
   {
     pattern: /regardless of (the )?(token'?s?|its) internal structure/i,
     label: "token-internal-structure constraint",
