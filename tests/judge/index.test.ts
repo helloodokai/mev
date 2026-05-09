@@ -71,4 +71,49 @@ describe("collectValidationIssues", () => {
     );
     expect(issues.some((issue) => issue.message.includes("[REDACTED_EMAIL]"))).toBe(true);
   });
+
+  it("flags missing expected JSON top-level fields", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        reference: {
+          output: '{"entities": [{"text": "Acme", "type": "ORG", "start": 0}]}',
+          synthesizerConfidence: 0.9,
+        },
+        rubric: { quality: "Adheres strictly to the required JSON schema and outputs ONLY the JSON object." },
+      }),
+      '[]',
+    );
+    expect(issues.some((issue) => issue.message.includes("root type") || issue.message.includes("entities"))).toBe(true);
+  });
+
+  it("flags missing expected JSON nested fields", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        reference: {
+          output: '{"entities": [{"text": "Acme", "type": "ORG", "start": 0}]}',
+          synthesizerConfidence: 0.9,
+        },
+        rubric: {
+          quality:
+            "Maintains precise character indexing ('start') for every extracted entity and preserves the exact casing and spacing of the original text in the 'text' field.",
+        },
+      }),
+      '{"entities": [{"text": "Acme"}]}',
+    );
+    expect(issues.some((issue) => issue.message.includes("entities[].type"))).toBe(true);
+    expect(issues.some((issue) => issue.message.includes("entities[].start"))).toBe(true);
+  });
+
+  it("does not require extra reference-only alias fields", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        reference: {
+          output: '[{"entity": "Acme", "text": "Acme", "type": "ORG", "start": 0, "end": 4}]',
+          synthesizerConfidence: 0.9,
+        },
+      }),
+      '[{"text": "Acme", "type": "ORG", "start": 0}]',
+    );
+    expect(issues.some((issue) => issue.message.includes("entity"))).toBe(false);
+  });
 });

@@ -167,4 +167,98 @@ describe("judgeAbsolute with execution", () => {
     expect(results[0]?.meanScore).toBe(1);
     expect(results[0]?.scores[0]?.justification).toContain("auto-validator");
   });
+
+  it("caps scores when JSON output misses required schema fields", async () => {
+    const completionProvider = makeProvider(async () => ({
+      text: '{"entities": [{"text": "Acme"}]}',
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: 0,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const judgeProvider = makeProvider(async () => ({
+      text: JSON.stringify({
+        scores: [{ criterion: "quality", score: 5, confidence: 1, justification: "perfect" }],
+        overall_assessment: "great",
+      }),
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 100,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const cases = [
+      {
+        ...makeEvalCase("c1", "test input"),
+        reference: {
+          output: '{"entities": [{"text": "Acme", "type": "ORG", "start": 0}]}',
+          synthesizerConfidence: 0.9,
+        },
+      },
+    ];
+    const results = await judgeAbsolute({
+      provider: judgeProvider,
+      model: "judge-model",
+      cases,
+      models: [{ alias: "m1", promptSha: brandPromptSha("sha"), promptText: "system prompt" }],
+      caseSetSha: "cs1",
+      completionProvider,
+      completionModel: "completion-model",
+    });
+
+    expect(results[0]?.meanScore).toBe(2);
+    expect(results[0]?.scores[0]?.justification).toContain("missing expected JSON field");
+  });
+
+  it("does not cap scores for missing reference-only alias fields", async () => {
+    const completionProvider = makeProvider(async () => ({
+      text: '[{"text": "Acme", "type": "ORG", "start": 0}]',
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: 0,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const judgeProvider = makeProvider(async () => ({
+      text: JSON.stringify({
+        scores: [{ criterion: "quality", score: 4, confidence: 1, justification: "good" }],
+        overall_assessment: "good",
+      }),
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 100,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const cases = [
+      {
+        ...makeEvalCase("c1", "test input"),
+        reference: {
+          output: '[{"entity": "Acme", "text": "Acme", "type": "ORG", "start": 0, "end": 4}]',
+          synthesizerConfidence: 0.9,
+        },
+      },
+    ];
+    const results = await judgeAbsolute({
+      provider: judgeProvider,
+      model: "judge-model",
+      cases,
+      models: [{ alias: "m1", promptSha: brandPromptSha("sha"), promptText: "system prompt" }],
+      caseSetSha: "cs1",
+      completionProvider,
+      completionModel: "completion-model",
+    });
+
+    expect(results[0]?.meanScore).toBe(4);
+    expect(results[0]?.scores[0]?.justification).not.toContain("auto-validator");
+  });
 });

@@ -13,7 +13,7 @@ import { createProvider } from "../provider/index.js";
 import { wrapWithLevelUp } from "../provider/levelup.js";
 import { generateHtmlReport, generateSummary } from "../reporting/index.js";
 import { showReviewPane } from "../tui/index.js";
-import type { CaseFile, EvalCase, FrontierPoint } from "../types/index.js";
+import type { CaseFile, EvalCase, FrontierPoint, TaskSpec } from "../types/index.js";
 import { brandCaseSetSha, brandPromptSha } from "../types/index.js";
 import { compileIntent } from "./compile-intent.js";
 import {
@@ -183,7 +183,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     }));
   }
 
-  starterPrompt = buildStarterPrompt(spec?.taskSummary, spec?.successCriteria);
+  starterPrompt = buildStarterPrompt(spec);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
   // Train/test split: cases marked holdout=true are NEVER used during evolution.
@@ -555,12 +555,26 @@ async function tryResume(
   return { runDir: dir, runId: path.basename(dir), phase: cp.phase };
 }
 
-function buildStarterPrompt(summary: string, criteria: ReadonlyArray<string>): string {
+export function buildStarterPrompt(spec: TaskSpec): string {
+  const outputExamples = spec.outputs
+    .map((output) => `${output.name}: ${output.example}`)
+    .filter((value) => value.trim().length > 0);
+  const inputHints = spec.inputs
+    .map((input) => `${input.name}: ${input.description}`)
+    .filter((value) => value.trim().length > 0);
+
   return [
-    summary,
+    spec.taskSummary,
+    "",
+    "## Input Contract",
+    ...inputHints.map((hint, i) => `${i + 1}. ${hint}`),
+    "",
+    "## Output Contract",
+    ...spec.outputs.map((output, i) => `${i + 1}. ${output.description}`),
+    ...(outputExamples.length > 0 ? ["", "## Output Examples", ...outputExamples] : []),
     "",
     "## Success Criteria",
-    ...criteria.map((c, i) => `${i + 1}. ${c}`),
+    ...spec.successCriteria.map((c, i) => `${i + 1}. ${c}`),
     "",
     "Respond accurately and concisely. If the input is ambiguous, state your assumptions.",
   ].join("\n");

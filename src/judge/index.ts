@@ -289,11 +289,16 @@ export function collectValidationIssues(caseData: EvalCase, output: string): Val
     });
   }
 
-  if (looksLikeJson(reference) && !isValidJson(trimmedOutput)) {
-    issues.push({
-      cap: 1,
-      message: "expected valid JSON output",
-    });
+  if (looksLikeJson(reference)) {
+    if (!isValidJson(trimmedOutput)) {
+      issues.push({
+        cap: 1,
+        message: "expected valid JSON output",
+      });
+    } else {
+      const schemaIssues = collectJsonShapeIssues(caseData, reference, trimmedOutput);
+      issues.push(...schemaIssues);
+    }
   }
 
   const requiredRedactionTokens = Array.from(
@@ -327,6 +332,98 @@ function isValidJson(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+function collectJsonShapeIssues(
+  caseData: EvalCase,
+  reference: string,
+  output: string,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const referenceJson = JSON.parse(reference) as unknown;
+  const outputJson = JSON.parse(output) as unknown;
+
+  if (Array.isArray(referenceJson) !== Array.isArray(outputJson)) {
+    issues.push({ cap: 2, message: "expected matching JSON root type" });
+    return issues;
+  }
+
+  const referenceContainer = getPrimaryEntityContainer(referenceJson);
+  const outputContainer = getPrimaryEntityContainer(outputJson);
+
+  if (referenceContainer.kind === "entities-array" && outputContainer.kind !== "entities-array") {
+    issues.push({ cap: 2, message: "missing expected JSON field(s): entities" });
+    return issues;
+  }
+
+  if (referenceContainer.kind !== outputContainer.kind) {
+    issues.push({ cap: 2, message: "expected matching entity container shape" });
+    return issues;
+  }
+
+  if (referenceContainer.kind === "entities-array" && !outputContainer.hasEntitiesKey) {
+    issues.push({ cap: 2, message: "missing expected JSON field(s): entities" });
+    return issues;
+  }
+
+  const rubricText = Object.entries(caseData.rubric)
+    .flatMap(([key, value]) => [key, value])
+    .join(" ")
+    .toLowerCase();
+  const requiredFields = new Set<string>();
+  const referenceSample = referenceContainer.sample;
+  if (referenceSample && typeof referenceSample === "object" && referenceSample !== null) {
+    if ("text" in referenceSample) requiredFields.add("text");
+    if (rubricText.includes("'start'") || rubricText.includes(" start")) requiredFields.add("start");
+    if ("type" in referenceSample || "entity_type" in referenceSample) requiredFields.add("type");
+  }
+
+  const outputSample = outputContainer.sample;
+  if (requiredFields.size === 0 || !outputSample || typeof outputSample !== "object") return issues;
+
+  const missingFields = [...requiredFields].filter((field) => {
+    if (field === "type") {
+      return !(
+        "type" in (outputSample as Record<string, unknown>) ||
+        "entity_type" in (outputSample as Record<string, unknown>)
+      );
+    }
+    return !(field in (outputSample as Record<string, unknown>));
+  });
+
+  if (missingFields.length > 0) {
+    const prefix = outputContainer.kind === "entities-array" ? "entities[]" : "[]";
+    issues.push({
+      cap: 2,
+      message: `missing expected JSON field(s): ${missingFields.map((field) => `${prefix}.${field}`).join(", ")}`,
+    });
+  }
+
+  return issues;
+}
+
+function getPrimaryEntityContainer(value: unknown): {
+  kind: "array" | "entities-array" | "other";
+  sample?: unknown;
+  hasEntitiesKey?: boolean;
+} {
+  if (Array.isArray(value)) {
+    return {
+      kind: "array",
+      sample: value.find((item) => typeof item === "object" && item !== null) ?? value[0],
+    };
+  }
+  if (typeof value === "object" && value !== null && "entities" in value) {
+    const entities = (value as { entities?: unknown }).entities;
+    if (Array.isArray(entities)) {
+      return {
+        kind: "entities-array",
+        sample: entities.find((item) => typeof item === "object" && item !== null) ?? entities[0],
+        hasEntitiesKey: true,
+      };
+    }
+  }
+  return { kind: "other" };
 }
 
 export async function judgePairwise(
