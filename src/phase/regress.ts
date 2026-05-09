@@ -2,7 +2,7 @@ import path from "node:path";
 import { loadAllCases, loadConfig } from "../config/loader.js";
 import { judgeAbsolute } from "../judge/index.js";
 import { createProvider } from "../provider/index.js";
-import type { EvalCase } from "../types/index.js";
+import type { EvalCase, FewShotExample } from "../types/index.js";
 import { brandPromptSha } from "../types/index.js";
 
 export interface RegressOptions {
@@ -16,19 +16,7 @@ export async function regress(
   const config = await loadConfig(opts.configPath);
   const projectDir = path.dirname(path.resolve(opts.configPath));
 
-  // Load locked prompt - strip provenance comments (lines starting with "# " at the top)
-  const lockedPrompt = await Bun.file(path.join(projectDir, "prompts", "locked.md")).text();
-  const lines = lockedPrompt.split("\n");
-  let inProvenance = true;
-  const promptLines: string[] = [];
-  for (const line of lines) {
-    if (inProvenance && line.startsWith("# ")) {
-      continue; // Skip provenance header lines
-    }
-    inProvenance = false;
-    promptLines.push(line);
-  }
-  const cleanPrompt = promptLines.join("\n").trim();
+  const { promptText: cleanPrompt, examples } = await loadLockedArtifact(projectDir);
 
   // Load cases
   const caseFiles = await loadAllCases(`${projectDir}/cases`);
@@ -60,7 +48,16 @@ export async function regress(
     model: config.judge.model,
     cases: evalCases,
     models: [
-      { alias: lockedModel.alias, promptSha: brandPromptSha("regress"), promptText: cleanPrompt },
+      (() => {
+        const lockedPrompt = {
+          alias: lockedModel.alias,
+          promptSha: brandPromptSha("regress"),
+          promptText: cleanPrompt,
+        };
+        return examples && examples.length > 0
+          ? { ...lockedPrompt, examples }
+          : lockedPrompt;
+      })(),
     ],
     caseSetSha: "regress",
     completionProvider: provider,
@@ -88,4 +85,43 @@ export async function regress(
 
   console.log("All cases passed regression.");
   return { passed: true, regressed: [] };
+}
+
+export async function loadLockedArtifact(
+  projectDir: string,
+): Promise<{ promptText: string; examples?: FewShotExample[] }> {
+  const lockedPrompt = await Bun.file(path.join(projectDir, "prompts", "locked.md")).text();
+  const lines = lockedPrompt.split("\n");
+  let inProvenance = true;
+  const promptLines: string[] = [];
+  for (const line of lines) {
+    if (inProvenance && (line.startsWith("# ") || line === "#" || line.trim() === "")) continue;
+    inProvenance = false;
+    promptLines.push(line);
+  }
+
+  let examples: FewShotExample[] | undefined;
+  const examplesFile = Bun.file(path.join(projectDir, "prompts", "locked.examples.json"));
+  if (await examplesFile.exists()) {
+    const parsed = (await examplesFile.json()) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("locked.examples.json must contain an array");
+    examples = parsed.map((item) => {
+      if (
+        typeof item !== "object" ||
+        item === null ||
+        typeof item.input !== "string" ||
+        typeof item.output !== "string" ||
+        ("caseId" in item && item.caseId !== undefined && typeof item.caseId !== "string")
+      ) {
+        throw new Error("locked.examples.json contains an invalid few-shot example");
+      }
+      return item as FewShotExample;
+    });
+  }
+
+  const artifact: { promptText: string; examples?: FewShotExample[] } = {
+    promptText: promptLines.join("\n").trim(),
+  };
+  if (examples && examples.length > 0) artifact.examples = examples;
+  return artifact;
 }

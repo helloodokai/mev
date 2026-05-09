@@ -1,9 +1,10 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CaseFile, FrontierPoint, MevConfig } from "../types/index.js";
 
 export interface LockInResult {
   promptPath: string;
+  examplesPath?: string;
   configPath: string;
   casesDir: string;
   summaryPath: string;
@@ -51,6 +52,19 @@ export async function lockIn(opts: {
   const promptPath = path.join(promptsDir, "locked.md");
   await writeFile(promptPath, promptContent);
 
+  let examplesPath: string | undefined;
+  const lockedExamplesPath = path.join(promptsDir, "locked.examples.json");
+  if (selectedPoint.examples && selectedPoint.examples.length > 0) {
+    await writeFile(lockedExamplesPath, JSON.stringify(selectedPoint.examples, null, 2));
+    examplesPath = lockedExamplesPath;
+  } else {
+    try {
+      await unlink(lockedExamplesPath);
+    } catch {
+      /* no-op */
+    }
+  }
+
   // Write cases
   const casesDir = path.join(projectDir, "cases");
   await mkdir(casesDir, { recursive: true });
@@ -82,7 +96,9 @@ export async function lockIn(opts: {
   await mkdir(path.dirname(summaryPath), { recursive: true });
   await writeFile(summaryPath, summary);
 
-  return { promptPath, configPath, casesDir, summaryPath };
+  const result: LockInResult = { promptPath, configPath, casesDir, summaryPath };
+  if (examplesPath) result.examplesPath = examplesPath;
+  return result;
 }
 
 function serializeCase(c: CaseFile): string {

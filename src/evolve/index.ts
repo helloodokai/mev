@@ -22,6 +22,99 @@ import {
   topKDiverseBeam,
 } from "./archive.js";
 
+type ScoredEvolutionStep = EvolutionStep & { _latencyMs?: number; _examples?: FewShotExample[] };
+
+const DRIFT_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /character-for-character/i, label: "character-for-character preservation" },
+  { pattern: /exact character count/i, label: "exact character count" },
+  { pattern: /exact character length/i, label: "exact character length" },
+  { pattern: /match the character length/i, label: "matched character length" },
+  {
+    pattern: /regardless of (the )?(token'?s?|its) internal structure/i,
+    label: "token-internal-structure constraint",
+  },
+  { pattern: /immediately adjacent/i, label: "adjacent-token constraint" },
+  { pattern: /without any intervening/i, label: "no-intervening-text constraint" },
+  { pattern: /concatenated immediately/i, label: "forced token concatenation" },
+  { pattern: /internal mapping/i, label: "internal mapping mechanism" },
+  { pattern: /first appearance of each unique entity/i, label: "first-appearance indexing" },
+  { pattern: /assign a unique, sequential index/i, label: "sequential indexing" },
+];
+
+export function detectPromptDrift(args: {
+  baselinePrompts: ReadonlyArray<string>;
+  candidatePrompt: string;
+  taskSpec: TaskSpec;
+  supportingText?: ReadonlyArray<string>;
+}): string[] {
+  const baselineLines = new Set(
+    args.baselinePrompts
+      .flatMap((prompt) => prompt.split("\n"))
+      .map((line) => normalizePromptLine(line))
+      .filter(Boolean),
+  );
+
+  const groundedCorpus = [
+    ...args.baselinePrompts,
+    args.taskSpec.taskSummary,
+    ...args.taskSpec.successCriteria,
+    ...args.taskSpec.failureModes,
+    ...args.taskSpec.outOfScope,
+    ...(args.supportingText ?? []),
+  ].join("\n");
+
+  const reasons: string[] = [];
+  for (const rawLine of args.candidatePrompt.split("\n")) {
+    const line = normalizePromptLine(rawLine);
+    if (!line || baselineLines.has(line)) continue;
+
+    for (const drift of DRIFT_PATTERNS) {
+      if (!drift.pattern.test(rawLine)) continue;
+      if (drift.pattern.test(groundedCorpus)) continue;
+      reasons.push(`Introduces unsupported ${drift.label}: ${rawLine.trim()}`);
+    }
+  }
+
+  return reasons;
+}
+
+export function applyAntiDriftGuardrails(args: {
+  fallbackPrompt: string;
+  baselinePrompts: ReadonlyArray<string>;
+  candidate: EditedPrompt;
+  taskSpec: TaskSpec;
+  supportingText?: ReadonlyArray<string>;
+}): EditedPrompt {
+  const driftInput: {
+    baselinePrompts: ReadonlyArray<string>;
+    candidatePrompt: string;
+    taskSpec: TaskSpec;
+    supportingText?: ReadonlyArray<string>;
+  } = {
+    baselinePrompts: args.baselinePrompts,
+    candidatePrompt: args.candidate.prompt,
+    taskSpec: args.taskSpec,
+  };
+  if (args.supportingText && args.supportingText.length > 0) {
+    driftInput.supportingText = args.supportingText;
+  }
+  const reasons = detectPromptDrift(driftInput);
+  if (reasons.length === 0) return args.candidate;
+
+  return {
+    prompt: args.fallbackPrompt,
+    changes_made: [
+      "Fallback: anti-drift guard rejected unsupported edit",
+      ...reasons.slice(0, 2),
+    ],
+    expected_improvement: "None (anti-drift guard preserved the last grounded prompt)",
+  };
+}
+
+function normalizePromptLine(line: string): string {
+  return line.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 const REFLECTOR_SYSTEM_PROMPT = `You are a prompt optimization reflector. Given a system prompt and a set of failure cases (with judge scores per criterion), analyze WHY the prompt failed and propose specific edits.
 
 Your output must be structured JSON:
@@ -31,13 +124,15 @@ Your output must be structured JSON:
   "rationale": "why this edit is expected to improve performance on the failing cases"
 }
 
-Be specific. Don't say "make it better" — say "add an instruction to verify edge cases before processing, because cases 2 and 3 scored 2/5 on the 'handles empty input' criterion."`;
+Be specific. Don't say "make it better" — say "add an instruction to verify edge cases before processing, because cases 2 and 3 scored 2/5 on the 'handles empty input' criterion."
+- Do NOT invent new requirements, hidden mechanisms, formatting rules, or structural invariants that are not justified by the task spec or visible in the failing cases.`;
 
 const EDITOR_SYSTEM_PROMPT = `You are a prompt editor. Given the current prompt and a reflection proposing changes, produce a revised system prompt.
 
 Rules:
 - Preserve the prompt's overall structure and intent
 - Make ONLY the changes proposed in the reflection
+- Do NOT invent new requirements, hidden mechanisms, formatting rules, or structural invariants that are not grounded in the task spec, failing cases, or reflection
 - Do not remove working instructions
 - Be concise — every line should earn its place
 - The output must be a complete, standalone system prompt
@@ -52,6 +147,7 @@ Output valid JSON:
 const CROSSOVER_SYSTEM_PROMPT = `You are a prompt-crossover specialist. Given TWO parent prompts that each scored well on different cases, create a CHILD prompt that combines the strengths of both.
 
 Your goal: identify the unique strengths of each parent and merge them coherently. Do NOT just concatenate — synthesize.
+- Do NOT invent new requirements, hidden mechanisms, formatting rules, or structural invariants that are not already supported by the task and the parent prompts.
 
 Output valid JSON:
 {
@@ -144,7 +240,7 @@ export async function evolvePrompt(
     if (beam.length === 0) break;
 
     // For each beam member, generate one child (mutation or crossover)
-    const childPromises: Array<Promise<EvolutionStep | null>> = [];
+    const childPromises: Array<Promise<ScoredEvolutionStep | null>> = [];
     for (let bi = 0; bi < beam.length; bi++) {
       const parent = beam[bi];
       if (!parent) continue;
@@ -183,6 +279,7 @@ export async function evolvePrompt(
         generation: gen,
         parents: step.parents ?? [],
       };
+      if (step._examples && step._examples.length > 0) childPoint.examples = step._examples;
       archive = paretoUpdate(archive, childPoint);
       archive = addEvolutionStep(archive, step);
       totalCost += step.costUsd;
@@ -218,7 +315,7 @@ async function mutationChild(
   resultsByPromptSha: Map<string, JudgeResult[]>,
   judgeSamples: number,
   maxExamples: number,
-): Promise<EvolutionStep | null> {
+): Promise<ScoredEvolutionStep | null> {
   // Identify worst-performing cases for this parent (for reflection)
   const parentResults = resultsByPromptSha.get(parent.promptSha) ?? [];
   const failures = getWorstCases(config.cases, parentResults, 3);
@@ -234,7 +331,13 @@ async function mutationChild(
   );
 
   // Edit
-  const edited = await editPrompt(parent.promptText, reflection, config.provider, config.model);
+  const edited = await editPrompt(
+    parent.promptText,
+    reflection,
+    config.taskSpec,
+    config.provider,
+    config.model,
+  );
 
   // Optionally bootstrap few-shot examples from parent's strongest cases
   let examples: FewShotExample[] | undefined;
@@ -296,7 +399,7 @@ async function mutationChild(
       return sum + (raw?.execution?.costUsd ?? 0);
     }, 0);
 
-  return {
+  const step: ScoredEvolutionStep = {
     generation: gen,
     parentId: parent.promptSha,
     childId: brandPromptSha(childSha),
@@ -308,7 +411,9 @@ async function mutationChild(
     timestamp: new Date().toISOString(),
     operator: "mutate",
     parents: [parent.promptSha],
-  } satisfies EvolutionStep & { _latencyMs?: number; _examples?: FewShotExample[] };
+  };
+  if (examples && examples.length > 0) step._examples = examples;
+  return step;
 }
 
 /**
@@ -321,7 +426,7 @@ async function crossoverChild(
   gen: number,
   resultsByPromptSha: Map<string, JudgeResult[]>,
   judgeSamples: number,
-): Promise<EvolutionStep | null> {
+): Promise<ScoredEvolutionStep | null> {
   // Use the editor with crossover system prompt
   const userPrompt = `## Parent A (score: ${parentA.meanScore.toFixed(2)})
 ${parentA.promptText}
@@ -347,7 +452,13 @@ Synthesize a child prompt combining the strengths of both parents.`;
   const resp = await config.provider.complete(request);
   let edited: EditedPrompt;
   try {
-    edited = EditedPromptSchema.parse(JSON.parse(resp.text || "{}"));
+    const parsed = EditedPromptSchema.parse(JSON.parse(resp.text || "{}"));
+    edited = applyAntiDriftGuardrails({
+      fallbackPrompt: parentA.meanScore >= parentB.meanScore ? parentA.promptText : parentB.promptText,
+      baselinePrompts: [parentA.promptText, parentB.promptText],
+      candidate: parsed,
+      taskSpec: config.taskSpec,
+    });
   } catch {
     // Fall back to picking the higher-scoring parent
     edited = {
@@ -463,7 +574,8 @@ Failure modes: ${taskSpec.failureModes.join("; ")}
 ## Failing Cases
 ${failureText}
 
-Analyze the failures and propose specific, actionable edits. Be precise about which criteria are weakest and why.`;
+Analyze the failures and propose specific, actionable edits. Be precise about which criteria are weakest and why.
+Do NOT propose new mechanisms, formatting rules, hidden bookkeeping, or structural invariants unless they are already justified by the task spec or visible in the failures.`;
 
   const request: CompletionRequest = {
     model,
@@ -494,6 +606,7 @@ Analyze the failures and propose specific, actionable edits. Be precise about wh
 async function editPrompt(
   parentPrompt: string,
   reflection: { result: EvolutionReflection; costUsd: number },
+  taskSpec: TaskSpec,
   provider: Provider,
   model: string,
 ): Promise<EditedPrompt & { costUsd: number }> {
@@ -520,7 +633,26 @@ Produce the revised prompt. Keep it complete and standalone.`;
   const resp = await provider.complete(request);
   try {
     const parsed = EditedPromptSchema.parse(JSON.parse(resp.text || "{}"));
-    return { ...parsed, costUsd: resp.costUsd ?? 0 };
+    const guardInput: {
+      fallbackPrompt: string;
+      baselinePrompts: ReadonlyArray<string>;
+      candidate: EditedPrompt;
+      taskSpec: TaskSpec;
+      supportingText?: ReadonlyArray<string>;
+    } = {
+      fallbackPrompt: parentPrompt,
+      baselinePrompts: [parentPrompt],
+      candidate: parsed,
+      taskSpec,
+    };
+    const supportingText = [
+      reflection.result.critique,
+      reflection.result.proposed_edit_description,
+      reflection.result.rationale,
+    ];
+    if (supportingText.length > 0) guardInput.supportingText = supportingText;
+    const guarded = applyAntiDriftGuardrails(guardInput);
+    return { ...guarded, costUsd: resp.costUsd ?? 0 };
   } catch {
     return {
       prompt: parentPrompt,
