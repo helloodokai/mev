@@ -293,6 +293,10 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       config: { generationsLeft: config.budget.generations, nextGeneration: 1 },
       frontier: [],
     });
+  } else {
+    const baselineMetrics = await loadBaselineMetrics(runDir);
+    baselineScore = baselineMetrics.train;
+    baselineHoldoutScore = baselineMetrics.holdout;
   }
 
   // Phase D: Evolution (TRAIN cases only — holdout is reserved for sweep/lock-in)
@@ -642,6 +646,31 @@ async function loadStarterPromptOverride(projectDir: string): Promise<string | n
   if (!(await starterFile.exists())) return null;
   const text = (await starterFile.text()).trim();
   return text.length > 0 ? text : null;
+}
+
+async function loadBaselineMetrics(runDir: string): Promise<{ train: number; holdout: number }> {
+  const baselineFile = Bun.file(path.join(runDir, "baseline.jsonl"));
+  if (!(await baselineFile.exists())) return { train: 0, holdout: 0 };
+
+  const rows = (await baselineFile.text())
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { meanScore?: number; split?: string });
+
+  const trainScores = rows.filter((row) => row.split === "train").map((row) => row.meanScore ?? 0);
+  const holdoutScores = rows.filter((row) => row.split === "holdout").map((row) => row.meanScore ?? 0);
+
+  return {
+    train:
+      trainScores.length > 0
+        ? trainScores.reduce((sum, score) => sum + score, 0) / trainScores.length
+        : 0,
+    holdout:
+      holdoutScores.length > 0
+        ? holdoutScores.reduce((sum, score) => sum + score, 0) / holdoutScores.length
+        : 0,
+  };
 }
 
 async function writeBenchmarkDiffs(args: {
