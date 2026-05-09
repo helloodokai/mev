@@ -67,6 +67,18 @@ describe("ParetoArchive", () => {
     // All three non-dominated
     expect(archive.frontier.length).toBe(3);
   });
+
+  it("prefers the simpler prompt when primary metrics tie", () => {
+    let archive = createArchive();
+    const verbose = makePoint("verbose", 4.0, 1.0, 500);
+    verbose.promptText = "Line one\n## Rules\n**Do** be precise and accurate with every single response.";
+    const simple = makePoint("simple", 4.0, 1.0, 500);
+    simple.promptText = "Be precise and accurate.";
+    archive = paretoUpdate(archive, verbose);
+    archive = paretoUpdate(archive, simple);
+    expect(archive.frontier.length).toBe(1);
+    expect(archive.frontier[0]?.promptSha).toBe(brandPromptSha("simple"));
+  });
 });
 
 describe("sampleFromFrontier", () => {
@@ -100,5 +112,15 @@ describe("findKneePoint", () => {
     const frontier = [makePoint("only", 3.0, 1.0, 500)];
     const knee = findKneePoint(frontier);
     expect(knee).toBe(0);
+  });
+
+  it("prefers the simpler prompt when quality-per-dollar ties", () => {
+    const simple = makePoint("simple", 2.0, 1.0, 100);
+    simple.promptText = "short prompt";
+    const verbose = makePoint("verbose", 4.0, 2.0, 100);
+    verbose.promptText = "## Very\n**long** prompt with extra formatting and many more tokens than needed";
+    const frontier = [verbose, simple];
+    const knee = findKneePoint(frontier);
+    expect(frontier[knee]?.promptSha).toBe(brandPromptSha("simple"));
   });
 });

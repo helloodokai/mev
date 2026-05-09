@@ -25,6 +25,19 @@ export function paretoUpdate(archive: ParetoArchive, candidate: FrontierPoint): 
       existing.totalCostUsd <= candidate.totalCostUsd &&
       existing.p95LatencyMs <= candidate.p95LatencyMs;
 
+    const samePrimaryMetrics =
+      candidate.meanScore === existing.meanScore &&
+      candidate.totalCostUsd === existing.totalCostUsd &&
+      candidate.p95LatencyMs === existing.p95LatencyMs;
+    if (samePrimaryMetrics) {
+      if (comparePromptSimplicity(candidate, existing) < 0) {
+        continue;
+      }
+      isDominated = true;
+      newFrontier.push(existing);
+      continue;
+    }
+
     if (candidateDominatesExisting && !existingDominatesCandidate) {
       // Candidate dominates existing; existing moves to dominated
       continue; // Don't add existing to new frontier
@@ -88,7 +101,11 @@ export function findKneePoint(frontier: FrontierPoint[]): number {
     const point = sorted[i];
     if (!point) continue;
     const qualityPerDollar = point.meanScore / Math.max(point.totalCostUsd, 0.001);
-    if (qualityPerDollar > bestRatio) {
+    if (
+      qualityPerDollar > bestRatio ||
+      (qualityPerDollar === bestRatio &&
+        comparePromptSimplicity(point, sorted[bestKnee] ?? point) < 0)
+    ) {
       bestRatio = qualityPerDollar;
       bestKnee = i;
     }
@@ -125,6 +142,7 @@ export function topKDiverseBeam(
   if (k <= 1) {
     const top = all.reduce<FrontierPoint | null>((best, cur) => {
       if (!best || cur.meanScore > best.meanScore) return cur;
+      if (cur.meanScore === best.meanScore && comparePromptSimplicity(cur, best) < 0) return cur;
       return best;
     }, null);
     return top ? [top] : [];
@@ -134,7 +152,10 @@ export function topKDiverseBeam(
   const remaining = [...all];
 
   // First pick: highest score
-  remaining.sort((a, b) => b.meanScore - a.meanScore);
+  remaining.sort((a, b) => {
+    if (b.meanScore !== a.meanScore) return b.meanScore - a.meanScore;
+    return comparePromptSimplicity(a, b);
+  });
   const first = remaining.shift();
   if (!first) return [];
   picked.push(first);
@@ -188,4 +209,15 @@ function weightedSample(items: FrontierPoint[], weights: number[]): FrontierPoin
   const fallback = items[items.length - 1];
   if (!fallback) throw new Error("Unexpected empty items list");
   return fallback;
+}
+
+function comparePromptSimplicity(a: FrontierPoint, b: FrontierPoint): number {
+  return promptComplexity(a.promptText) - promptComplexity(b.promptText);
+}
+
+function promptComplexity(prompt: string): number {
+  const tokens = prompt.trim().split(/\s+/).filter(Boolean).length;
+  const lines = prompt.split("\n").filter((line) => line.trim().length > 0).length;
+  const emphasisMarkers = (prompt.match(/\*\*|##|```/g) ?? []).length;
+  return tokens + lines * 2 + emphasisMarkers * 3;
 }

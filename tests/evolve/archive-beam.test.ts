@@ -29,6 +29,17 @@ describe("topKDiverseBeam", () => {
     expect(beam[0]?.promptSha as string).toBe("aaa");
   });
 
+  it("prefers the simpler prompt when top scores tie", () => {
+    let archive = createArchive();
+    archive = paretoUpdate(archive, makePoint("aaa", 4.0, "short prompt"));
+    archive = paretoUpdate(
+      archive,
+      makePoint("bbb", 4.0, "## Very\n**long** prompt with extra formatting and many more tokens"),
+    );
+    const beam = topKDiverseBeam(archive, 1);
+    expect(beam[0]?.promptSha as string).toBe("aaa");
+  });
+
   it("prefers diverse prompts over near-duplicates", () => {
     let archive = createArchive();
     // Two near-identical high scorers and one different lower scorer
