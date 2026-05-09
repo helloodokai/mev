@@ -1,0 +1,16 @@
+id = "0004"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["hf", "emotion", "classification"]
+holdout = false
+
+[input]
+content = """i feel so blessed to have been able to help"""
+
+[reference]
+output = """{"emotion":"JOY"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one emotion field and predicts the correct emotion label from JOY, SADNESS, LOVE, ANGER, FEAR, SURPRISE."

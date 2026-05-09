@@ -1,0 +1,41 @@
+[project]
+name = "hf-emotion-benchmark"
+intent = "I want an agent that classifies the emotion of a single sentence.\n\nThe agent must:\n- Read one sentence of user-facing text.\n- Output valid JSON with exactly one key: \"emotion\".\n- The value of \"emotion\" must be one of: JOY, SADNESS, LOVE, ANGER, FEAR, SURPRISE.\n- Output ONLY the JSON object and nothing else.\n"
+seed_examples = [ "Input: i didnt feel humiliated Output: {\"emotion\":\"SADNESS\"}", "Input: i feel ecstatic and thankful today Output: {\"emotion\":\"JOY\"}", "Input: i am furious that they lied to me Output: {\"emotion\":\"ANGER\"}" ]
+
+[constraints]
+max_latency_p95_ms = 5000
+must_be_local = true
+forbid_data_leakage = false
+
+[budget]
+max_usd = 0.01
+max_minutes = 35
+generations = 6
+cases = 24
+
+[optimization]
+holdout_fraction = 0.25
+beam_width = 3
+judge_samples = 1
+crossover_rate = 0.3
+max_examples = 3
+escalate_on_plateau = true
+lockin_best_of_n = 1
+
+[[models]]
+alias = "qwen"
+provider = "ollama-local"
+model = "qwen2.5:7b"
+
+[judge]
+provider = "ollama-local"
+model = "gemma4:e4b"
+
+[synthesizer]
+provider = "ollama-local"
+model = "gemma4:e4b"
+
+[critic]
+provider = "ollama-local"
+model = "gemma4:e4b"

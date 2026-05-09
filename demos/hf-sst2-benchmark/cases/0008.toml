@@ -1,0 +1,16 @@
+id = "0008"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["hf", "sst2", "sentiment"]
+holdout = false
+
+[input]
+content = """it 's a sharp movie about otherwise dull subjects ."""
+
+[reference]
+output = """{"sentiment":"POSITIVE"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one sentiment field and predicts the correct binary sentiment label."

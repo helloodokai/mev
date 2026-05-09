@@ -1,0 +1,16 @@
+id = "0023"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["hf", "emotion", "classification"]
+holdout = true
+
+[input]
+content = """im not crying in a corner or feeling so out of control irritable that i cant handle it"""
+
+[reference]
+output = """{"emotion":"ANGER"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one emotion field and predicts the correct emotion label from JOY, SADNESS, LOVE, ANGER, FEAR, SURPRISE."

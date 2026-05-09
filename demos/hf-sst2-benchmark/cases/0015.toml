@@ -1,0 +1,16 @@
+id = "0015"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["hf", "sst2", "sentiment"]
+holdout = true
+
+[input]
+content = """the title not only describes its main characters , but the lazy people behind the camera as well ."""
+
+[reference]
+output = """{"sentiment":"NEGATIVE"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one sentiment field and predicts the correct binary sentiment label."

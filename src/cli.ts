@@ -124,6 +124,30 @@ class OptimizeCommand extends Command {
   }
 }
 
+class BenchmarkCommand extends Command {
+  static override paths = [["benchmark"]];
+
+  config = Option.String("--config", "mev.toml", { description: "Path to mev.toml" });
+  yes = Option.Boolean("--yes", false, { description: "Accept all defaults (CI mode)" });
+  resume = Option.Boolean("--resume", false, { description: "Resume latest interrupted run" });
+  verbose = Option.Boolean("--verbose", false, { description: "Verbose output" });
+  budgetUsd = Option.String("--budget-usd", { description: "Override budget max USD" });
+  budgetMinutes = Option.String("--budget-min", { description: "Override budget max minutes" });
+
+  override async execute() {
+    const opts: OptimizeOptions = {
+      configPath: this.config,
+      yes: this.yes,
+      resume: this.resume,
+      verbose: this.verbose,
+      benchmark: true,
+    };
+    if (this.budgetUsd) opts.budgetUsd = Number.parseFloat(this.budgetUsd);
+    if (this.budgetMinutes) opts.budgetMinutes = Number.parseInt(this.budgetMinutes, 10);
+    await optimize(opts);
+  }
+}
+
 class RegressCommand extends Command {
   static override paths = [["regress"]];
 
@@ -208,6 +232,7 @@ const cli = new Cli({
 
 cli.register(InitCommand);
 cli.register(OptimizeCommand);
+cli.register(BenchmarkCommand);
 cli.register(RegressCommand);
 cli.register(ModelsCommand);
 cli.register(DiffCommand);

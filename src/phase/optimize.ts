@@ -1,5 +1,5 @@
 import path from "node:path";
-import { computeCaseSetSha, loadConfig } from "../config/loader.js";
+import { computeCaseSetSha, loadAllCases, loadConfig } from "../config/loader.js";
 import { computePromptSha } from "../config/loader.js";
 import {
   checkCalibrationDrift,
@@ -40,6 +40,7 @@ export interface OptimizeOptions {
   budgetUsd?: number;
   budgetMinutes?: number;
   noSecondJudge?: boolean;
+  benchmark?: boolean;
 }
 
 export async function optimize(opts: OptimizeOptions): Promise<void> {
@@ -121,35 +122,44 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   // Phase B: Synthesize dataset (skip if resuming after baseline)
   const skipB = checkpointPhase !== null && checkpointPhase !== "baseline";
   if (!skipB) {
-    console.log("[B] Synthesizing candidate cases...");
+    console.log(opts.benchmark ? "[B] Loading benchmark cases..." : "[B] Synthesizing candidate cases...");
     if (!spec) throw new Error("Spec not loaded");
-    const synthResult = await synthesizeDataset(
-      spec,
-      config.project.intent,
-      config.project.seed_examples,
-      config.budget.cases,
-      synthProvider,
-      config.synthesizer.model,
-      criticProvider,
-      config.critic.model,
-      4, // concurrency
-      config.optimization.holdout_fraction,
-    );
-    cases = synthResult.cases;
+    const importedCases = await tryLoadProjectCases(projectDir);
+    if (importedCases) {
+      cases = importedCases;
+      console.log(`[B] ✓ Imported ${cases.length} preloaded case(s) from project cases/`);
+    } else {
+      if (opts.benchmark) {
+        throw new Error("Benchmark mode requires preloaded project cases in cases/*.toml");
+      }
+      const synthResult = await synthesizeDataset(
+        spec,
+        config.project.intent,
+        config.project.seed_examples,
+        config.budget.cases,
+        synthProvider,
+        config.synthesizer.model,
+        criticProvider,
+        config.critic.model,
+        4, // concurrency
+        config.optimization.holdout_fraction,
+      );
+      cases = synthResult.cases;
+      console.log(
+        `[B] ✓ ${synthResult.accepted} / ${synthResult.accepted + synthResult.rejected} accepted (${Math.round((synthResult.accepted / (synthResult.accepted + synthResult.rejected)) * 100)}%). Filters: ${synthResult.filterStats.schema} schema, ${synthResult.filterStats.dedup} dedup, ${synthResult.filterStats.critic} critic, ${synthResult.filterStats.trivial} trivial.`,
+      );
+      console.log(
+        `[B] ✓ Train/test split: ${synthResult.trainCount} train + ${synthResult.holdoutCount} holdout (generalization eval).`,
+      );
+      const criticEvent = checkCriticRejectionRate(
+        synthResult.accepted,
+        synthResult.rejected,
+        synthResult.criticRejections.map((r) => r.verdict.reasoning),
+      );
+      if (criticEvent) escalationQueue.add(criticEvent);
+    }
     caseSetSha = brandCaseSetSha(computeCaseSetSha(cases));
     await snapshotCases(cases, runDir);
-    console.log(
-      `[B] ✓ ${synthResult.accepted} / ${synthResult.accepted + synthResult.rejected} accepted (${Math.round((synthResult.accepted / (synthResult.accepted + synthResult.rejected)) * 100)}%). Filters: ${synthResult.filterStats.schema} schema, ${synthResult.filterStats.dedup} dedup, ${synthResult.filterStats.critic} critic, ${synthResult.filterStats.trivial} trivial.`,
-    );
-    console.log(
-      `[B] ✓ Train/test split: ${synthResult.trainCount} train + ${synthResult.holdoutCount} holdout (generalization eval).`,
-    );
-    const criticEvent = checkCriticRejectionRate(
-      synthResult.accepted,
-      synthResult.rejected,
-      synthResult.criticRejections.map((r) => r.verdict.reasoning),
-    );
-    if (criticEvent) escalationQueue.add(criticEvent);
     evalCases = cases.map((c) => ({
       id: c.id,
       generatedAt: c.generated_at,
@@ -549,6 +559,16 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   console.log("  → mev.toml");
   console.log("  → cases/");
   console.log(`  → runs/${runId}/`);
+}
+
+async function tryLoadProjectCases(projectDir: string): Promise<CaseFile[] | null> {
+  const casesDir = path.join(projectDir, "cases");
+  try {
+    const cases = await loadAllCases(casesDir);
+    return cases.length > 0 ? cases : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

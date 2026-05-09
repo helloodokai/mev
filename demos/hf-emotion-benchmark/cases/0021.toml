@@ -1,0 +1,16 @@
+id = "0021"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["hf", "emotion", "classification"]
+holdout = true
+
+[input]
+content = """i want a relationship where partners empower each other not feel burdened by their histories and eccentricities"""
+
+[reference]
+output = """{"emotion":"SADNESS"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one emotion field and predicts the correct emotion label from JOY, SADNESS, LOVE, ANGER, FEAR, SURPRISE."

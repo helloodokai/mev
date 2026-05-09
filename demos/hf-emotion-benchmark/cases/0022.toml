@@ -1,0 +1,16 @@
+id = "0022"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["hf", "emotion", "classification"]
+holdout = true
+
+[input]
+content = """i began feeling shaky my heart was sort of skipping around i felt like someone who had been drinking coffee all day long"""
+
+[reference]
+output = """{"emotion":"FEAR"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one emotion field and predicts the correct emotion label from JOY, SADNESS, LOVE, ANGER, FEAR, SURPRISE."

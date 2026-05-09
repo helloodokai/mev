@@ -1,0 +1,16 @@
+id = "0010"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["hf", "sst2", "sentiment"]
+holdout = false
+
+[input]
+content = """a dull , simple-minded and stereotypical tale of drugs , death and mind-numbing indifference on the inner-city streets ."""
+
+[reference]
+output = """{"sentiment":"NEGATIVE"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one sentiment field and predicts the correct binary sentiment label."

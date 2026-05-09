@@ -1,0 +1,16 @@
+id = "0014"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["hf", "emotion", "classification"]
+holdout = false
+
+[input]
+content = """i feel so impatient and sometimes i feel thankful that god gave me more time for the moulding of my heart"""
+
+[reference]
+output = """{"emotion":"ANGER"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one emotion field and predicts the correct emotion label from JOY, SADNESS, LOVE, ANGER, FEAR, SURPRISE."

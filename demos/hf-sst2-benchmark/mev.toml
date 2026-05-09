@@ -1,0 +1,41 @@
+[project]
+name = "hf-sst2-benchmark"
+intent = "I want an agent that classifies the sentiment of a single sentence as either POSITIVE or NEGATIVE.\n\nThe agent must:\n- Read one sentence of user-facing text.\n- Output valid JSON with exactly one key: \"sentiment\".\n- The value of \"sentiment\" must be either POSITIVE or NEGATIVE.\n- Output ONLY the JSON object and nothing else.\n"
+seed_examples = [ "Input: a stirring, funny and finally transporting re-imagining of beauty and the beast. Output: {\"sentiment\":\"POSITIVE\"}", "Input: a limp and lifeless thriller that never gets off the ground. Output: {\"sentiment\":\"NEGATIVE\"}" ]
+
+[constraints]
+max_latency_p95_ms = 5000
+must_be_local = true
+forbid_data_leakage = false
+
+[budget]
+max_usd = 0.01
+max_minutes = 30
+generations = 6
+cases = 16
+
+[optimization]
+holdout_fraction = 0.3
+beam_width = 3
+judge_samples = 1
+crossover_rate = 0.3
+max_examples = 2
+escalate_on_plateau = true
+lockin_best_of_n = 1
+
+[[models]]
+alias = "qwen"
+provider = "ollama-local"
+model = "qwen2.5:7b"
+
+[judge]
+provider = "ollama-local"
+model = "gemma4:e4b"
+
+[synthesizer]
+provider = "ollama-local"
+model = "gemma4:e4b"
+
+[critic]
+provider = "ollama-local"
+model = "gemma4:e4b"

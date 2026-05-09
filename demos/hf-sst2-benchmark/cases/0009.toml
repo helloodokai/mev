@@ -1,0 +1,16 @@
+id = "0009"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["hf", "sst2", "sentiment"]
+holdout = false
+
+[input]
+content = """-lrb- gayton 's script -rrb- telegraphs every discovery and layers on the gloss of convenience ."""
+
+[reference]
+output = """{"sentiment":"POSITIVE"}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with exactly one sentiment field and predicts the correct binary sentiment label."
