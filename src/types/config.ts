@@ -18,6 +18,7 @@ export const MevConfigSchema = z.object({
     name: z.string().min(1),
     intent: z.string().min(1),
     seed_examples: z.array(z.string()).default([]),
+    starter_prompt_path: z.string().min(1).optional(),
   }),
   constraints: z.object({
     max_latency_p95_ms: z.number().int().positive().default(5000),

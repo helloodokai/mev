@@ -8,6 +8,7 @@ describe("MevConfigSchema", () => {
         name: "test",
         intent: "Do things",
         seed_examples: [],
+        starter_prompt_path: "../prompts/live.md",
       },
       constraints: {
         max_latency_p95_ms: 5000,
@@ -28,6 +29,9 @@ describe("MevConfigSchema", () => {
 
     const result = MevConfigSchema.safeParse(config);
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.project.starter_prompt_path).toBe("../prompts/live.md");
+    }
   });
 
   it("rejects missing intent", () => {

@@ -200,7 +200,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
 
   const starterExamples = parseSeedExamples(config.project.seed_examples);
   starterPrompt =
-    (await loadStarterPromptOverride(projectDir)) ??
+    (await loadStarterPromptOverride(projectDir, config.project.starter_prompt_path)) ??
     buildStarterPrompt(spec, config.project.seed_examples);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
@@ -641,11 +641,26 @@ async function tryLoadProjectSpec(projectDir: string): Promise<{
   };
 }
 
-async function loadStarterPromptOverride(projectDir: string): Promise<string | null> {
-  const starterFile = Bun.file(path.join(projectDir, "prompts", "starter.md"));
-  if (!(await starterFile.exists())) return null;
-  const text = (await starterFile.text()).trim();
-  return text.length > 0 ? text : null;
+async function loadStarterPromptOverride(
+  projectDir: string,
+  starterPromptPath?: string,
+): Promise<string | null> {
+  const configuredPath = starterPromptPath
+    ? path.isAbsolute(starterPromptPath)
+      ? starterPromptPath
+      : path.join(projectDir, starterPromptPath)
+    : null;
+  const candidatePaths = configuredPath
+    ? [configuredPath, path.join(projectDir, "prompts", "starter.md")]
+    : [path.join(projectDir, "prompts", "starter.md")];
+
+  for (const candidate of candidatePaths) {
+    const starterFile = Bun.file(candidate);
+    if (!(await starterFile.exists())) continue;
+    const text = (await starterFile.text()).trim();
+    if (text.length > 0) return text;
+  }
+  return null;
 }
 
 async function loadBaselineMetrics(runDir: string): Promise<{ train: number; holdout: number }> {
