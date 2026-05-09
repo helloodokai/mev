@@ -123,4 +123,48 @@ describe("judgeAbsolute with execution", () => {
 
     expect(results[0]?.scores[0]?.score).toBe(0);
   });
+
+  it("caps scores when deterministic validators catch invalid JSON", async () => {
+    const completionProvider = makeProvider(async () => ({
+      text: "not-json",
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: 0,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const judgeProvider = makeProvider(async () => ({
+      text: JSON.stringify({
+        scores: [{ criterion: "quality", score: 5, confidence: 1, justification: "perfect" }],
+        overall_assessment: "great",
+      }),
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 100,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const cases = [
+      {
+        ...makeEvalCase("c1", "test input"),
+        reference: { output: '{"entities": []}', synthesizerConfidence: 0.9 },
+      },
+    ];
+    const results = await judgeAbsolute({
+      provider: judgeProvider,
+      model: "judge-model",
+      cases,
+      models: [{ alias: "m1", promptSha: brandPromptSha("sha"), promptText: "system prompt" }],
+      caseSetSha: "cs1",
+      completionProvider,
+      completionModel: "completion-model",
+    });
+
+    expect(results[0]?.meanScore).toBe(1);
+    expect(results[0]?.scores[0]?.justification).toContain("auto-validator");
+  });
 });

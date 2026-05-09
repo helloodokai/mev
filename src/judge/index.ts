@@ -66,6 +66,11 @@ Output valid JSON:
   "criterion_scores": [{"criterion": "...", "model_a_score": 1-5, "model_b_score": 1-5}]
 }`;
 
+interface ValidationIssue {
+  cap: number;
+  message: string;
+}
+
 export interface JudgeOptions {
   provider: Provider; // judge provider
   model: string; // judge model
@@ -216,12 +221,13 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
             opts.model,
             judgeSamples,
           );
+          const validatedScores = applyDeterministicValidators(case_, execution.text, scores);
           const mean =
-            scores.reduce((sum, s) => sum + s.score, 0) / Math.max(scores.length, 1);
+            validatedScores.reduce((sum, s) => sum + s.score, 0) / Math.max(validatedScores.length, 1);
           if (mean > bestMean) {
             bestMean = mean;
             bestExecution = execution;
-            bestScores = scores;
+            bestScores = validatedScores;
           }
           // Early exit if perfect
           if (mean >= 5 && bestOfN > 1) break;
@@ -251,6 +257,76 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
     results.push(item);
   }
   return results;
+}
+
+export function applyDeterministicValidators(
+  caseData: EvalCase,
+  output: string,
+  scores: ReadonlyArray<JudgeScore>,
+): JudgeScore[] {
+  const issues = collectValidationIssues(caseData, output);
+  if (issues.length === 0) return [...scores];
+
+  const cap = Math.max(0, Math.min(...issues.map((issue) => issue.cap)));
+  const note = `[auto-validator] ${issues.map((issue) => issue.message).join("; ")}`;
+  return scores.map((score) => ({
+    ...score,
+    score: Math.min(score.score, cap),
+    justification: `${note} | ${score.justification}`,
+  }));
+}
+
+export function collectValidationIssues(caseData: EvalCase, output: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const trimmedOutput = stripThinking(output).trim();
+  const reference = caseData.reference.output.trim();
+  const input = caseData.input.content.trim();
+
+  if (reference === input && trimmedOutput !== reference) {
+    issues.push({
+      cap: 1,
+      message: "expected unchanged output for a no-op case",
+    });
+  }
+
+  if (looksLikeJson(reference) && !isValidJson(trimmedOutput)) {
+    issues.push({
+      cap: 1,
+      message: "expected valid JSON output",
+    });
+  }
+
+  const requiredRedactionTokens = Array.from(
+    new Set(reference.match(/\[REDACTED_[A-Z_]+\]/g) ?? []),
+  );
+  if (requiredRedactionTokens.length > 0) {
+    const missingTokens = requiredRedactionTokens.filter((token) => !trimmedOutput.includes(token));
+    if (missingTokens.length > 0) {
+      issues.push({
+        cap: 2,
+        message: `missing required redaction token(s): ${missingTokens.join(", ")}`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+function looksLikeJson(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+}
+
+function isValidJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function judgePairwise(
