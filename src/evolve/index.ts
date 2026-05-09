@@ -174,6 +174,7 @@ export interface EvolutionConfig {
   generations: number;
   cases: EvalCase[]; // train cases only (holdout=false)
   starterPrompt: string;
+  starterExamples?: ReadonlyArray<FewShotExample>;
   taskSpec: TaskSpec;
   maxCostUsd: number;
   concurrency?: number;
@@ -202,11 +203,18 @@ export async function evolvePrompt(
     model: config.judgeModel,
     cases: config.cases,
     models: [
-      {
-        alias: config.model,
-        promptSha: brandPromptSha(starterSha),
-        promptText: config.starterPrompt,
-      },
+      config.starterExamples && config.starterExamples.length > 0
+        ? {
+            alias: config.model,
+            promptSha: brandPromptSha(starterSha),
+            promptText: config.starterPrompt,
+            examples: config.starterExamples,
+          }
+        : {
+            alias: config.model,
+            promptSha: brandPromptSha(starterSha),
+            promptText: config.starterPrompt,
+          },
     ],
     caseSetSha: "",
     concurrency: config.concurrency ?? 2,
@@ -226,8 +234,12 @@ export async function evolvePrompt(
     totalCostUsd: 0,
     p95LatencyMs: Math.round(starterElapsed),
     generation: 0,
-    examples: [],
   };
+  if (config.starterExamples && config.starterExamples.length > 0) {
+    starterPoint.examples = [...config.starterExamples];
+  } else {
+    starterPoint.examples = [];
+  }
   archive = paretoUpdate(archive, starterPoint);
 
   let totalCost = 0;
@@ -349,22 +361,24 @@ async function mutationChild(
 
   // Optionally bootstrap few-shot examples from parent's strongest cases
   let examples: FewShotExample[] | undefined;
-  if (maxExamples > 0 && parentResults.length > 0) {
+  if (maxExamples > 0) {
+    const bootstrapped: FewShotExample[] = parent.examples ? [...parent.examples] : [];
     const sortedByScore = [...parentResults].sort((a, b) => b.meanScore - a.meanScore);
     const topResults = sortedByScore.slice(0, maxExamples);
-    const bootstrapped: FewShotExample[] = [];
     for (const r of topResults) {
       const matchingCase = config.cases.find((c) => c.id === r.caseId);
       if (!matchingCase) continue;
       const raw = r.raw as { execution?: { text?: string } };
       const output = raw?.execution?.text;
       if (output && r.meanScore >= 4) {
+        if (bootstrapped.some((example) => example.caseId === matchingCase.id)) continue;
         bootstrapped.push({
           input: matchingCase.input.content,
           output,
           caseId: matchingCase.id,
         });
       }
+      if (bootstrapped.length >= maxExamples) break;
     }
     if (bootstrapped.length > 0) examples = bootstrapped;
   }

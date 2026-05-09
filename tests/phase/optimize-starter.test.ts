@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildStarterPrompt } from "../../src/phase/optimize.js";
+import { buildStarterPrompt, parseSeedExamples } from "../../src/phase/optimize.js";
 import type { TaskSpec } from "../../src/types/index.js";
 
 describe("buildStarterPrompt", () => {
@@ -59,5 +59,19 @@ describe("buildStarterPrompt", () => {
 
     expect(prompt).toContain("## Seed Examples");
     expect(prompt).toContain("Jane Miller emailed support");
+  });
+
+  it("parses input/output seed examples into few-shot examples", () => {
+    const examples = parseSeedExamples([
+      "Input: Jane Miller emailed support. Output: [REDACTED_NAME] emailed support.",
+      "not parseable",
+    ]);
+
+    expect(examples).toEqual([
+      {
+        input: "Jane Miller emailed support.",
+        output: "[REDACTED_NAME] emailed support.",
+      },
+    ]);
   });
 });

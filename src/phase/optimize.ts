@@ -13,7 +13,7 @@ import { createProvider } from "../provider/index.js";
 import { wrapWithLevelUp } from "../provider/levelup.js";
 import { generateHtmlReport, generateSummary } from "../reporting/index.js";
 import { showReviewPane } from "../tui/index.js";
-import type { CaseFile, EvalCase, FrontierPoint, TaskSpec } from "../types/index.js";
+import type { CaseFile, EvalCase, FewShotExample, FrontierPoint, TaskSpec } from "../types/index.js";
 import { brandCaseSetSha, brandPromptSha } from "../types/index.js";
 import { compileIntent } from "./compile-intent.js";
 import {
@@ -183,6 +183,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     }));
   }
 
+  const starterExamples = parseSeedExamples(config.project.seed_examples);
   starterPrompt = buildStarterPrompt(spec, config.project.seed_examples);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
@@ -205,7 +206,11 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       provider: judgeProvider,
       model: config.judge.model,
       cases: usableTrainCases,
-      models: [{ alias: "starter", promptSha: starterSha, promptText: starterPrompt }],
+      models: [
+        starterExamples.length > 0
+          ? { alias: "starter", promptSha: starterSha, promptText: starterPrompt, examples: starterExamples }
+          : { alias: "starter", promptSha: starterSha, promptText: starterPrompt },
+      ],
       caseSetSha,
       completionProvider: mp0.provider,
       completionModel: mp0.model,
@@ -233,7 +238,11 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
         provider: judgeProvider,
         model: config.judge.model,
         cases: holdoutCases,
-        models: [{ alias: "starter", promptSha: starterSha, promptText: starterPrompt }],
+        models: [
+          starterExamples.length > 0
+            ? { alias: "starter", promptSha: starterSha, promptText: starterPrompt, examples: starterExamples }
+            : { alias: "starter", promptSha: starterSha, promptText: starterPrompt },
+        ],
         caseSetSha,
         completionProvider: mp0.provider,
         completionModel: mp0.model,
@@ -288,6 +297,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
       generations: generationsToRun,
       cases: usableTrainCases,
       starterPrompt,
+      starterExamples,
       taskSpec: {
         taskSummary: spec?.taskSummary,
         inputs: spec?.inputs,
@@ -582,6 +592,19 @@ export function buildStarterPrompt(
     "",
     "Respond accurately and concisely. If the input is ambiguous, state your assumptions.",
   ].join("\n");
+}
+
+export function parseSeedExamples(seedExamples: ReadonlyArray<string>): FewShotExample[] {
+  const parsed: FewShotExample[] = [];
+  for (const raw of seedExamples) {
+    const match = raw.match(/input:\s*([\s\S]*?)\s+output:\s*([\s\S]*)/i);
+    if (!match) continue;
+    const input = match[1]?.trim();
+    const output = match[2]?.trim();
+    if (!input || !output) continue;
+    parsed.push({ input, output });
+  }
+  return parsed;
 }
 
 function computeParetoFrontier(points: FrontierPoint[]): FrontierPoint[] {
