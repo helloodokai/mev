@@ -35,4 +35,29 @@ describe("buildStarterPrompt", () => {
     expect(prompt).toContain("## Success Criteria");
     expect(prompt).toContain("Outputs valid JSON only.");
   });
+
+  it("includes user seed examples when provided", () => {
+    const spec: TaskSpec = {
+      taskSummary: "Redact customer details.",
+      inputs: [{ name: "ticket", description: "Support ticket text", example: "Jane emailed support" }],
+      outputs: [
+        {
+          name: "redacted_text",
+          description: "Ticket with sensitive fields replaced",
+          example: "[REDACTED_NAME] emailed support",
+        },
+      ],
+      successCriteria: ["Uses fixed redaction tokens."],
+      failureModes: ["missed tokens"],
+      difficultyAxes: ["format variability"],
+      outOfScope: [],
+    };
+
+    const prompt = buildStarterPrompt(spec, [
+      "Input: Jane Miller emailed support. Output: [REDACTED_NAME] emailed support.",
+    ]);
+
+    expect(prompt).toContain("## Seed Examples");
+    expect(prompt).toContain("Jane Miller emailed support");
+  });
 });

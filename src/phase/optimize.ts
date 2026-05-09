@@ -183,7 +183,7 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
     }));
   }
 
-  starterPrompt = buildStarterPrompt(spec);
+  starterPrompt = buildStarterPrompt(spec, config.project.seed_examples);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
   // Train/test split: cases marked holdout=true are NEVER used during evolution.
@@ -555,7 +555,10 @@ async function tryResume(
   return { runDir: dir, runId: path.basename(dir), phase: cp.phase };
 }
 
-export function buildStarterPrompt(spec: TaskSpec): string {
+export function buildStarterPrompt(
+  spec: TaskSpec,
+  seedExamples: ReadonlyArray<string> = [],
+): string {
   const outputExamples = spec.outputs
     .map((output) => `${output.name}: ${output.example}`)
     .filter((value) => value.trim().length > 0);
@@ -572,6 +575,7 @@ export function buildStarterPrompt(spec: TaskSpec): string {
     "## Output Contract",
     ...spec.outputs.map((output, i) => `${i + 1}. ${output.description}`),
     ...(outputExamples.length > 0 ? ["", "## Output Examples", ...outputExamples] : []),
+    ...(seedExamples.length > 0 ? ["", "## Seed Examples", ...seedExamples] : []),
     "",
     "## Success Criteria",
     ...spec.successCriteria.map((c, i) => `${i + 1}. ${c}`),
