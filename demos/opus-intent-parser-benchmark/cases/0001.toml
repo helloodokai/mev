@@ -1,0 +1,18 @@
+id = "0001"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["opus", "intent", "parser"]
+holdout = false
+
+[input]
+content = """Analyze this request and extract the structured intent.
+
+Request: Every weekday at 9am email me a summary of new support tickets."""
+
+[reference]
+output = """{"intentType":"recurring","scheduleCron":"0 9 * * 1-5","requiredCapabilities":["email","summarization"],"clarifyingQuestions":[],"domainContext":"reporting","description":"Every weekday at 9am email me a summary of new support tickets."}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with the exact required keys, a correct recurring vs one-time classification, a sensible cron or null, and accurate capabilities/questions/domain context for the request."

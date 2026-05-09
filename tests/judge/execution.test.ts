@@ -261,4 +261,53 @@ describe("judgeAbsolute with execution", () => {
     expect(results[0]?.meanScore).toBe(4);
     expect(results[0]?.scores[0]?.justification).not.toContain("auto-validator");
   });
+
+  it("caps scores when intent parser output violates exact contract", async () => {
+    const completionProvider = makeProvider(async () => ({
+      text: '{"intentType":"sometimes","scheduleCron":"every monday","requiredCapabilities":["email","slack"],"clarifyingQuestions":[],"domainContext":"reporting","description":"hello","extra":true}',
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: 0,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const judgeProvider = makeProvider(async () => ({
+      text: JSON.stringify({
+        scores: [{ criterion: "quality", score: 5, confidence: 1, justification: "perfect" }],
+        overall_assessment: "great",
+      }),
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 100,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const cases = [
+      {
+        ...makeEvalCase("c1", "Analyze this request and extract the structured intent."),
+        reference: {
+          output:
+            '{"intentType":"recurring","scheduleCron":"0 9 * * 1-5","requiredCapabilities":["email"],"clarifyingQuestions":[],"domainContext":"reporting","description":"Every weekday at 9am email me a report."}',
+          synthesizerConfidence: 0.9,
+        },
+      },
+    ];
+    const results = await judgeAbsolute({
+      provider: judgeProvider,
+      model: "judge-model",
+      cases,
+      models: [{ alias: "m1", promptSha: brandPromptSha("sha"), promptText: "system prompt" }],
+      caseSetSha: "cs1",
+      completionProvider,
+      completionModel: "completion-model",
+    });
+
+    expect(results[0]?.meanScore).toBe(1);
+    expect(results[0]?.scores[0]?.justification).toContain("intentType must be one-time or recurring");
+    expect(results[0]?.scores[0]?.justification).toContain("valid 5-field cron");
+  });
 });

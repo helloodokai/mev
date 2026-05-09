@@ -1,0 +1,18 @@
+id = "0010"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["opus", "intent", "parser"]
+holdout = true
+
+[input]
+content = """Analyze this request and extract the structured intent.
+
+Request: Sync new leads from the website into our CRM every hour."""
+
+[reference]
+output = """{"intentType":"recurring","scheduleCron":"0 * * * *","requiredCapabilities":["api_call"],"clarifyingQuestions":[],"domainContext":"data_sync","description":"Sync new leads from the website into our CRM every hour."}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with the exact required keys, a correct recurring vs one-time classification, a sensible cron or null, and accurate capabilities/questions/domain context for the request."

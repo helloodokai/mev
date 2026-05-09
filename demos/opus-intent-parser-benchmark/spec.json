@@ -1,0 +1,45 @@
+{
+  "task_summary": "Extract a structured intent from a natural language request specifically for Odokai plans, outputting a JSON object with predefined keys and strict constraints.",
+  "inputs": [
+    {
+      "name": "request",
+      "description": "A user request formatted as an Odokai intent parsing prompt.",
+      "example": "Analyze this request and extract the structured intent.\n\nRequest: Every weekday at 9am email me a summary of new support tickets."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "intent_json",
+      "description": "A single JSON object with exact keys for intentType, scheduleCron, requiredCapabilities, clarifyingQuestions, domainContext, and description.",
+      "example": "{\"intentType\":\"recurring\",\"scheduleCron\":\"0 9 * * 1-5\",\"requiredCapabilities\":[\"email\",\"summarization\"],\"clarifyingQuestions\":[],\"domainContext\":\"reporting\",\"description\":\"Every weekday at 9am email me a summary of new support tickets.\"}"
+    }
+  ],
+  "success_criteria": [
+    "Outputs valid JSON only, with no extra commentary or markdown.",
+    "Uses exactly the required keys and no extra keys.",
+    "Classifies intentType correctly as one-time or recurring.",
+    "Uses a valid 5-field cron when a concrete schedule is present, or null when not.",
+    "Chooses only allowed capability identifiers relevant to the request.",
+    "Uses short, sensible clarifying questions only when required information is missing.",
+    "Produces an accurate domainContext and preserves the request meaning in description."
+  ],
+  "failure_modes": [
+    "Outputs any text outside the JSON object.",
+    "Uses missing, extra, or wrong keys in the JSON object.",
+    "Returns an invalid intentType or malformed scheduleCron.",
+    "Uses capability names outside the allowed list.",
+    "Adds clarifying questions when the request is already specific enough.",
+    "Misses obvious recurrence cues like daily, weekly, monthly, or explicit schedule times.",
+    "Over-normalizes or distorts the user's original request in description."
+  ],
+  "difficulty_axes": [
+    "schedule_specificity: explicit cron-like timing versus vague recurring language",
+    "capability_inference: single obvious tool versus multiple implied capabilities",
+    "ambiguity_level: fully specified requests versus requests needing clarification"
+  ],
+  "out_of_scope": [
+    "Generating the execution plan itself",
+    "Validating real downstream tool availability",
+    "Free-form conversational replies"
+  ]
+}

@@ -116,4 +116,34 @@ describe("collectValidationIssues", () => {
     );
     expect(issues.some((issue) => issue.message.includes("entity"))).toBe(false);
   });
+
+  it("flags invalid intent parser keys and enum values", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        reference: {
+          output:
+            '{"intentType":"one-time","scheduleCron":null,"requiredCapabilities":[],"clarifyingQuestions":[],"domainContext":"general","description":"Do the thing"}',
+          synthesizerConfidence: 0.9,
+        },
+      }),
+      '{"intentType":"sometimes","scheduleCron":null,"requiredCapabilities":[],"clarifyingQuestions":[],"domainContext":"general","description":"Do the thing","extra":true}',
+    );
+    expect(issues.some((issue) => issue.message.includes("intentType must be one-time or recurring"))).toBe(true);
+    expect(issues.some((issue) => issue.message.includes("unexpected intent parser key"))).toBe(true);
+  });
+
+  it("flags invalid cron and capabilities in intent parser output", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        reference: {
+          output:
+            '{"intentType":"recurring","scheduleCron":"0 9 * * 1-5","requiredCapabilities":["email"],"clarifyingQuestions":[],"domainContext":"reporting","description":"Every weekday at 9am email me a report"}',
+          synthesizerConfidence: 0.9,
+        },
+      }),
+      '{"intentType":"recurring","scheduleCron":"every day at 9","requiredCapabilities":["email","slack"],"clarifyingQuestions":[],"domainContext":"reporting","description":"Every weekday at 9am email me a report"}',
+    );
+    expect(issues.some((issue) => issue.message.includes("valid 5-field cron"))).toBe(true);
+    expect(issues.some((issue) => issue.message.includes("requiredCapabilities contains invalid value"))).toBe(true);
+  });
 });

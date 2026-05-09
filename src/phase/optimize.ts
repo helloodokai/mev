@@ -1,5 +1,5 @@
 import path from "node:path";
-import { computeCaseSetSha, loadAllCases, loadConfig } from "../config/loader.js";
+import { computeCaseSetSha, loadAllCases, loadConfig, loadSpec } from "../config/loader.js";
 import { computePromptSha } from "../config/loader.js";
 import {
   checkCalibrationDrift,
@@ -103,19 +103,24 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   const skipA = checkpointPhase !== null && checkpointPhase !== "baseline";
   if (!skipA) {
     console.log("[A] Compiling intent into a task spec...");
-    const compiled = await compileIntent(
-      config.project.intent,
-      config.project.seed_examples,
-      synthProvider,
-      config.synthesizer.model,
-    );
-    spec = compiled.spec;
-    await snapshotSpec(compiled.specFile, runDir);
-    console.log(`[A] ✓ Task spec compiled: ${spec.taskSummary}`);
+    const overriddenSpec = await tryLoadProjectSpec(projectDir);
+    if (overriddenSpec) {
+      spec = overriddenSpec.spec;
+      await snapshotSpec(overriddenSpec.specFile, runDir);
+      console.log(`[A] ✓ Using project spec override: ${spec.taskSummary}`);
+    } else {
+      const compiled = await compileIntent(
+        config.project.intent,
+        config.project.seed_examples,
+        synthProvider,
+        config.synthesizer.model,
+      );
+      spec = compiled.spec;
+      await snapshotSpec(compiled.specFile, runDir);
+      console.log(`[A] ✓ Task spec compiled: ${spec.taskSummary}`);
+    }
   } else {
-    const loaded = await import("../config/loader.js").then((m) =>
-      m.loadSpec(path.join(runDir, "spec.json")),
-    );
+    const loaded = await loadSpec(path.join(runDir, "spec.json"));
     spec = loaded as unknown as typeof spec;
   }
 
@@ -194,7 +199,9 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   }
 
   const starterExamples = parseSeedExamples(config.project.seed_examples);
-  starterPrompt = buildStarterPrompt(spec, config.project.seed_examples);
+  starterPrompt =
+    (await loadStarterPromptOverride(projectDir)) ??
+    buildStarterPrompt(spec, config.project.seed_examples);
   const starterSha = brandPromptSha(computePromptSha(starterPrompt));
 
   // Train/test split: cases marked holdout=true are NEVER used during evolution.
@@ -369,7 +376,18 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
   // Phase E: Sweep — evaluate top prompts on HOLDOUT for true generalization
   console.log("[E] Running model × prompt sweep on holdout cases...");
   // Take top-K from frontier by train score; evaluate each on holdout
-  const allCandidates = [...evolutionArchive.frontier, ...evolutionArchive.dominated]
+  const starterSweepPoint: FrontierPoint = {
+    promptSha: starterSha,
+    promptText: starterPrompt,
+    modelAlias: modelProviders[0]?.alias ?? "starter",
+    meanScore: baselineScore,
+    totalCostUsd: 0,
+    p95LatencyMs: 0,
+    generation: 0,
+  };
+  if (starterExamples.length > 0) starterSweepPoint.examples = starterExamples;
+
+  const allCandidates = [starterSweepPoint, ...evolutionArchive.frontier, ...evolutionArchive.dominated]
     .sort((a, b) => b.meanScore - a.meanScore);
   // Dedupe by promptSha (frontier and dominated may overlap conceptually after updates)
   const seenShas = new Set<string>();
@@ -395,7 +413,16 @@ export async function optimize(opts: OptimizeOptions): Promise<void> {
           provider: judgeProvider,
           model: config.judge.model,
           cases: sweepCases,
-          models: [{ alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText }],
+          models: [
+            prompt.examples && prompt.examples.length > 0
+              ? {
+                  alias: mp.alias,
+                  promptSha: prompt.promptSha,
+                  promptText: prompt.promptText,
+                  examples: prompt.examples,
+                }
+              : { alias: mp.alias, promptSha: prompt.promptSha, promptText: prompt.promptText },
+          ],
           caseSetSha,
           completionProvider: mp.provider,
           completionModel: mp.model,
@@ -569,6 +596,35 @@ async function tryLoadProjectCases(projectDir: string): Promise<CaseFile[] | nul
   } catch {
     return null;
   }
+}
+
+async function tryLoadProjectSpec(projectDir: string): Promise<{
+  spec: TaskSpec;
+  specFile: Awaited<ReturnType<typeof loadSpec>>;
+} | null> {
+  const specPath = path.join(projectDir, "spec.json");
+  const specFile = Bun.file(specPath);
+  if (!(await specFile.exists())) return null;
+  const loaded = await loadSpec(specPath);
+  return {
+    spec: {
+      taskSummary: loaded.task_summary,
+      inputs: loaded.inputs,
+      outputs: loaded.outputs,
+      successCriteria: loaded.success_criteria,
+      failureModes: loaded.failure_modes,
+      difficultyAxes: loaded.difficulty_axes,
+      outOfScope: loaded.out_of_scope,
+    },
+    specFile: loaded,
+  };
+}
+
+async function loadStarterPromptOverride(projectDir: string): Promise<string | null> {
+  const starterFile = Bun.file(path.join(projectDir, "prompts", "starter.md"));
+  if (!(await starterFile.exists())) return null;
+  const text = (await starterFile.text()).trim();
+  return text.length > 0 ? text : null;
 }
 
 // ---------------------------------------------------------------------------

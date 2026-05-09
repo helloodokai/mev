@@ -1,0 +1,18 @@
+id = "0009"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["opus", "intent", "parser"]
+holdout = true
+
+[input]
+content = """Analyze this request and extract the structured intent.
+
+Request: Every Friday at 4pm email me a recap of closed deals."""
+
+[reference]
+output = """{"intentType":"recurring","scheduleCron":"0 16 * * 5","requiredCapabilities":["email","summarization"],"clarifyingQuestions":[],"domainContext":"reporting","description":"Every Friday at 4pm email me a recap of closed deals."}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with the exact required keys, a correct recurring vs one-time classification, a sensible cron or null, and accurate capabilities/questions/domain context for the request."

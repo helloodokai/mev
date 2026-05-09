@@ -1,0 +1,18 @@
+id = "0006"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 2
+evolutions = []
+tags = ["opus", "intent", "parser"]
+holdout = false
+
+[input]
+content = """Analyze this request and extract the structured intent.
+
+Request: Write a CSV export of all open invoices and email it to finance."""
+
+[reference]
+output = """{"intentType":"one-time","scheduleCron":null,"requiredCapabilities":["data_export","email"],"clarifyingQuestions":[],"domainContext":"reporting","description":"Write a CSV export of all open invoices and email it to finance."}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with the exact required keys, a correct recurring vs one-time classification, a sensible cron or null, and accurate capabilities/questions/domain context for the request."

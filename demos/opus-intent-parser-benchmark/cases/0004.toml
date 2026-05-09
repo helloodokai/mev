@@ -1,0 +1,18 @@
+id = "0004"
+generated_at = "2026-05-09T00:00:00Z"
+difficulty_tier = 3
+evolutions = []
+tags = ["opus", "intent", "parser"]
+holdout = false
+
+[input]
+content = """Analyze this request and extract the structured intent.
+
+Request: Generate a monthly spreadsheet of ad spend by channel."""
+
+[reference]
+output = """{"intentType":"recurring","scheduleCron":null,"requiredCapabilities":["spreadsheet","data_export"],"clarifyingQuestions":["What day and time should the monthly report run?"],"domainContext":"reporting","description":"Generate a monthly spreadsheet of ad spend by channel."}"""
+synthesizer_confidence = 1
+
+[rubric]
+quality = "Outputs valid JSON with the exact required keys, a correct recurring vs one-time classification, a sensible cron or null, and accurate capabilities/questions/domain context for the request."

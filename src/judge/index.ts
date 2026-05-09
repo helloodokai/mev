@@ -71,6 +71,31 @@ interface ValidationIssue {
   message: string;
 }
 
+const ALLOWED_INTENT_CAPABILITIES = new Set([
+  "web_search",
+  "file_read",
+  "file_write",
+  "email",
+  "database",
+  "api_call",
+  "code_execution",
+  "image_generation",
+  "summarization",
+  "data_export",
+  "notification",
+  "calendar",
+  "spreadsheet",
+]);
+
+const INTENT_PARSER_KEYS = [
+  "intentType",
+  "scheduleCron",
+  "requiredCapabilities",
+  "clarifyingQuestions",
+  "domainContext",
+  "description",
+] as const;
+
 export interface JudgeOptions {
   provider: Provider; // judge provider
   model: string; // judge model
@@ -204,7 +229,8 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
         const runsToTry = Math.max(1, bestOfN);
         for (let attempt = 0; attempt < runsToTry; attempt++) {
           // Vary temperature slightly between attempts for diversity
-          const temp = bestOfN > 1 ? 0.2 + attempt * 0.15 : 0.2;
+          const baseTemp = defaultExecutionTemperature(case_);
+          const temp = bestOfN > 1 ? baseTemp + attempt * 0.1 : baseTemp;
           const execution = await executePrompt(
             modelConfig.promptText,
             case_,
@@ -259,6 +285,13 @@ export async function judgeAbsolute(opts: JudgeOptions): Promise<JudgeResult[]> 
   return results;
 }
 
+function defaultExecutionTemperature(caseData: EvalCase): number {
+  const reference = caseData.reference.output.trim();
+  if (looksLikeJson(reference)) return 0;
+  if (/\[REDACTED_[A-Z_]+\]/.test(reference)) return 0;
+  return 0.2;
+}
+
 export function applyDeterministicValidators(
   caseData: EvalCase,
   output: string,
@@ -298,6 +331,8 @@ export function collectValidationIssues(caseData: EvalCase, output: string): Val
     } else {
       const schemaIssues = collectJsonShapeIssues(caseData, reference, trimmedOutput);
       issues.push(...schemaIssues);
+      const intentIssues = collectIntentParserIssues(reference, trimmedOutput);
+      issues.push(...intentIssues);
     }
   }
 
@@ -315,6 +350,96 @@ export function collectValidationIssues(caseData: EvalCase, output: string): Val
   }
 
   return issues;
+}
+
+function collectIntentParserIssues(reference: string, output: string): ValidationIssue[] {
+  const referenceJson = JSON.parse(reference) as unknown;
+  if (!looksLikeIntentParserShape(referenceJson)) return [];
+
+  const issues: ValidationIssue[] = [];
+  const outputJson = JSON.parse(output) as unknown;
+  if (typeof outputJson !== "object" || outputJson === null || Array.isArray(outputJson)) {
+    return [{ cap: 1, message: "expected intent parser JSON object" }];
+  }
+
+  const outputRecord = outputJson as Record<string, unknown>;
+  const missingKeys = INTENT_PARSER_KEYS.filter((key) => !(key in outputRecord));
+  if (missingKeys.length > 0) {
+    issues.push({ cap: 1, message: `missing intent parser key(s): ${missingKeys.join(", ")}` });
+  }
+
+  const extraKeys = Object.keys(outputRecord).filter(
+    (key) => !INTENT_PARSER_KEYS.includes(key as (typeof INTENT_PARSER_KEYS)[number]),
+  );
+  if (extraKeys.length > 0) {
+    issues.push({ cap: 2, message: `unexpected intent parser key(s): ${extraKeys.join(", ")}` });
+  }
+
+  if (
+    "intentType" in outputRecord &&
+    outputRecord["intentType"] !== "one-time" &&
+    outputRecord["intentType"] !== "recurring"
+  ) {
+    issues.push({ cap: 1, message: "intentType must be one-time or recurring" });
+  }
+
+  if ("scheduleCron" in outputRecord && !isValidIntentCronValue(outputRecord["scheduleCron"])) {
+    issues.push({ cap: 1, message: "scheduleCron must be null or a valid 5-field cron" });
+  }
+
+  if ("requiredCapabilities" in outputRecord) {
+    if (!Array.isArray(outputRecord["requiredCapabilities"])) {
+      issues.push({ cap: 1, message: "requiredCapabilities must be a string array" });
+    } else {
+      const invalidCapabilities = outputRecord["requiredCapabilities"].filter(
+        (cap) => typeof cap !== "string" || !ALLOWED_INTENT_CAPABILITIES.has(cap),
+      );
+      if (invalidCapabilities.length > 0) {
+        issues.push({
+          cap: 1,
+          message: `requiredCapabilities contains invalid value(s): ${invalidCapabilities.join(", ")}`,
+        });
+      }
+    }
+  }
+
+  if (
+    "clarifyingQuestions" in outputRecord &&
+    (!Array.isArray(outputRecord["clarifyingQuestions"]) ||
+      outputRecord["clarifyingQuestions"].some((value) => typeof value !== "string"))
+  ) {
+    issues.push({ cap: 1, message: "clarifyingQuestions must be a string array" });
+  }
+
+  if (
+    "domainContext" in outputRecord &&
+    (typeof outputRecord["domainContext"] !== "string" || outputRecord["domainContext"].trim().length === 0)
+  ) {
+    issues.push({ cap: 2, message: "domainContext must be a non-empty string" });
+  }
+
+  if (
+    "description" in outputRecord &&
+    (typeof outputRecord["description"] !== "string" || outputRecord["description"].trim().length === 0)
+  ) {
+    issues.push({ cap: 2, message: "description must be a non-empty string" });
+  }
+
+  return issues;
+}
+
+function looksLikeIntentParserShape(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return INTENT_PARSER_KEYS.every((key) => key in record);
+}
+
+function isValidIntentCronValue(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value !== "string") return false;
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  return parts.every((part) => /^([\d*/,-]+)$/.test(part));
 }
 
 function looksLikeJson(text: string): boolean {
