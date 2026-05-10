@@ -315,6 +315,9 @@ export function collectValidationIssues(caseData: EvalCase, output: string): Val
   const reference = caseData.reference.output.trim();
   const input = caseData.input.content.trim();
 
+  const singleSentenceIssues = collectSingleSentenceActionIssues(input, reference, trimmedOutput);
+  issues.push(...singleSentenceIssues);
+
   if (reference === input && trimmedOutput !== reference) {
     issues.push({
       cap: 1,
@@ -350,6 +353,67 @@ export function collectValidationIssues(caseData: EvalCase, output: string): Val
   }
 
   return issues;
+}
+
+function collectSingleSentenceActionIssues(
+  input: string,
+  reference: string,
+  output: string,
+): ValidationIssue[] {
+  if (!/reply with only the single next sentence/i.test(input)) return [];
+  if (looksLikeJson(reference)) return [];
+
+  const issues: ValidationIssue[] = [];
+  const trimmed = output.trim();
+  if (trimmed.length === 0) {
+    return [{ cap: 1, message: "expected a single concise action sentence" }];
+  }
+
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    issues.push({ cap: 3, message: "single-sentence action should not be wrapped in quotes" });
+  }
+
+  const sentenceCount = countSentences(trimmed);
+  if (sentenceCount > 1) {
+    issues.push({ cap: 2, message: "expected exactly one sentence" });
+  }
+
+  const referenceIsQuestion = reference.trim().endsWith("?");
+  const outputIsQuestion = trimmed.endsWith("?");
+  if (referenceIsQuestion !== outputIsQuestion) {
+    issues.push({
+      cap: 3,
+      message: referenceIsQuestion
+        ? "expected a single blocking question"
+        : "expected an action sentence, not a question",
+    });
+  }
+
+  const referenceWordCount = countWords(reference);
+  const outputWordCount = countWords(trimmed);
+  const maxWords = Math.max(18, Math.round(referenceWordCount * 1.8));
+  if (outputWordCount > maxWords) {
+    issues.push({
+      cap: 3,
+      message: `single-sentence action is too verbose (${outputWordCount} words > ${maxWords})`,
+    });
+  }
+
+  return issues;
+}
+
+function countSentences(text: string): number {
+  const normalized = text.trim();
+  if (normalized.length === 0) return 0;
+  const matches = normalized.match(/[.!?](?:\s|$)/g);
+  return matches ? matches.length : 1;
+}
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
 function collectIntentParserIssues(reference: string, output: string): ValidationIssue[] {

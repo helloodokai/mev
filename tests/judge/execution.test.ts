@@ -310,4 +310,54 @@ describe("judgeAbsolute with execution", () => {
     expect(results[0]?.scores[0]?.justification).toContain("intentType must be one-time or recurring");
     expect(results[0]?.scores[0]?.justification).toContain("valid 5-field cron");
   });
+
+  it("caps scores for quoted single-sentence action responses", async () => {
+    const completionProvider = makeProvider(async () => ({
+      text: '"Running build_app to inspect the diagnostic."',
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: 0,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const judgeProvider = makeProvider(async () => ({
+      text: JSON.stringify({
+        scores: [{ criterion: "quality", score: 5, confidence: 1, justification: "perfect" }],
+        overall_assessment: "great",
+      }),
+      inputTokens: 10,
+      outputTokens: 5,
+      latencyMs: 100,
+      costUsd: null,
+      finishReason: "stop",
+      raw: {},
+    }));
+
+    const cases = [
+      {
+        ...makeEvalCase(
+          "c1",
+          "Scenario: Bundle failed. Constraint: For this evaluation, do not call tools. Reply with only the single next sentence you'd say before using tools.",
+        ),
+        reference: {
+          output: "Running build_app to inspect the diagnostic.",
+          synthesizerConfidence: 0.9,
+        },
+      },
+    ];
+    const results = await judgeAbsolute({
+      provider: judgeProvider,
+      model: "judge-model",
+      cases,
+      models: [{ alias: "m1", promptSha: brandPromptSha("sha"), promptText: "system prompt" }],
+      caseSetSha: "cs1",
+      completionProvider,
+      completionModel: "completion-model",
+    });
+
+    expect(results[0]?.meanScore).toBe(3);
+    expect(results[0]?.scores[0]?.justification).toContain("wrapped in quotes");
+  });
 });

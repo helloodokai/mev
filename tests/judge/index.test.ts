@@ -146,4 +146,49 @@ describe("collectValidationIssues", () => {
     expect(issues.some((issue) => issue.message.includes("valid 5-field cron"))).toBe(true);
     expect(issues.some((issue) => issue.message.includes("requiredCapabilities contains invalid value"))).toBe(true);
   });
+
+  it("flags quoted responses on single-next-sentence tasks", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        input: {
+          content:
+            "Scenario: Bundle failed. Constraint: For this evaluation, do not call tools. Reply with only the single next sentence you'd say before using tools.",
+        },
+        reference: { output: "Running build_app to inspect the diagnostic.", synthesizerConfidence: 0.9 },
+      }),
+      '"Running build_app to inspect the diagnostic."',
+    );
+    expect(issues.some((issue) => issue.message.includes("wrapped in quotes"))).toBe(true);
+  });
+
+  it("flags overlong responses on single-next-sentence tasks", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        input: {
+          content:
+            "Scenario: Add tldraw. Constraint: For this evaluation, do not call tools. Reply with only the single next sentence you'd say before using tools.",
+        },
+        reference: { output: "Checking the current tldraw docs first.", synthesizerConfidence: 0.9 },
+      }),
+      "I'll create a collaborative canvas app using tldraw by first checking the current tldraw documentation to ensure I implement it correctly and then proceed carefully.",
+    );
+    expect(issues.some((issue) => issue.message.includes("too verbose"))).toBe(true);
+  });
+
+  it("flags wrong question-vs-action mode on single-next-sentence tasks", () => {
+    const issues = collectValidationIssues(
+      makeEvalCase({
+        input: {
+          content:
+            "Scenario: Database unclear. Constraint: For this evaluation, do not call tools. Reply with only the single next sentence you'd say before using tools.",
+        },
+        reference: {
+          output: "Should this store customer records in your database or stay client-side only?",
+          synthesizerConfidence: 0.9,
+        },
+      }),
+      "Building the client-side version now.",
+    );
+    expect(issues.some((issue) => issue.message.includes("blocking question"))).toBe(true);
+  });
 });
